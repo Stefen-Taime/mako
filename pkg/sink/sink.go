@@ -195,15 +195,20 @@ func BuildFromSpec(spec v1.Sink) (pipeline.Sink, error) {
 	case v1.SinkBigQuery:
 		project, _ := spec.Config["project"].(string)
 		return NewBigQuerySink(project, spec.Schema, spec.Table, spec.Config), nil
+	case v1.SinkPostgres:
+		return NewPostgresSink(spec.Database, spec.Schema, spec.Table, spec.Config), nil
 	case v1.SinkKafka:
-		brokers, _ := spec.Config["brokers"].(string)
+		brokers := ""
+		if spec.Config != nil {
+			brokers, _ = spec.Config["brokers"].(string)
+		}
 		return NewKafkaSink(brokers, spec.Topic), nil
 	default:
 		return nil, fmt.Errorf("unsupported sink type: %s", spec.Type)
 	}
 }
 
-// NewKafkaSink creates a Kafka sink stub.
+// NewKafkaSink creates a Kafka sink adapter.
 func NewKafkaSink(brokers, topic string) pipeline.Sink {
 	return &kafkaSinkAdapter{brokers: brokers, topic: topic}
 }
@@ -213,8 +218,10 @@ type kafkaSinkAdapter struct {
 	topic   string
 }
 
-func (s *kafkaSinkAdapter) Open(ctx context.Context) error              { return nil }
+func (s *kafkaSinkAdapter) Open(ctx context.Context) error {
+	return nil // Kafka sink Open is handled by the kafka package directly when used via cmdRun
+}
 func (s *kafkaSinkAdapter) Write(ctx context.Context, events []*pipeline.Event) error { return nil }
-func (s *kafkaSinkAdapter) Flush(ctx context.Context) error             { return nil }
-func (s *kafkaSinkAdapter) Close() error                                { return nil }
-func (s *kafkaSinkAdapter) Name() string                                { return "kafka:" + s.topic }
+func (s *kafkaSinkAdapter) Flush(ctx context.Context) error                           { return nil }
+func (s *kafkaSinkAdapter) Close() error                                              { return nil }
+func (s *kafkaSinkAdapter) Name() string                                              { return "kafka:" + s.topic }

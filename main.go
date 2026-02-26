@@ -25,6 +25,7 @@ import (
 	"github.com/Stefen-Taime/mako/pkg/config"
 	"github.com/Stefen-Taime/mako/pkg/kafka"
 	"github.com/Stefen-Taime/mako/pkg/pipeline"
+	"github.com/Stefen-Taime/mako/pkg/schema"
 	"github.com/Stefen-Taime/mako/pkg/sink"
 	"github.com/Stefen-Taime/mako/pkg/transform"
 )
@@ -539,6 +540,42 @@ func cmdRun(args []string) error {
 
 	// Create and start pipeline
 	pipe := pipeline.New(p, source, chain, sinks)
+
+	// Configure DLQ if enabled
+	if p.Isolation.DLQEnabled {
+		dlqTopic := ""
+		if p.Schema != nil && p.Schema.DLQTopic != "" {
+			dlqTopic = p.Schema.DLQTopic
+		} else {
+			dlqTopic = p.Source.Topic + ".dlq"
+		}
+		dlqSink := kafka.NewSink(brokers, dlqTopic)
+		pipe.SetDLQ(dlqSink)
+		fmt.Fprintf(os.Stderr, "🗑️  DLQ:      %s\n", dlqTopic)
+	}
+
+	// Configure Schema Registry validation if enabled
+	if p.Schema != nil && p.Schema.Enforce {
+		registryURL := p.Schema.Registry
+		if registryURL == "" {
+			registryURL = os.Getenv("SCHEMA_REGISTRY_URL")
+		}
+		if registryURL == "" {
+			registryURL = "http://localhost:8081"
+		}
+
+		// Resolve environment variables in registry URL
+		registryURL = os.ExpandEnv(registryURL)
+
+		subject := p.Schema.Subject
+		if subject == "" {
+			subject = p.Source.Topic + "-value"
+		}
+
+		validator := schema.NewValidator(registryURL, subject, true, p.Schema.OnFailure)
+		pipe.SetSchemaValidator(validator)
+		fmt.Fprintf(os.Stderr, "📐 Schema:   %s (subject: %s)\n", registryURL, subject)
+	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

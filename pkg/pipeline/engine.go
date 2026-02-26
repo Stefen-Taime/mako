@@ -13,6 +13,7 @@ import (
 	"time"
 
 	v1 "github.com/Stefen-Taime/mako/api/v1"
+	"github.com/Stefen-Taime/mako/pkg/schema"
 	"github.com/Stefen-Taime/mako/pkg/transform"
 )
 
@@ -48,19 +49,21 @@ type Sink interface {
 
 // Pipeline is the core runtime that connects Source → Transforms → Sink(s).
 type Pipeline struct {
-	spec   v1.Pipeline
-	source Source
-	chain  *transform.Chain
-	sinks  []Sink
-	dlq    Sink // Dead Letter Queue sink (optional)
+	spec            v1.Pipeline
+	source          Source
+	chain           *transform.Chain
+	sinks           []Sink
+	dlq             Sink               // Dead Letter Queue sink (optional)
+	schemaValidator *schema.Validator   // Schema Registry validator (optional)
 
 	// Metrics
-	eventsIn  atomic.Int64
-	eventsOut atomic.Int64
-	errors    atomic.Int64
-	dlqCount  atomic.Int64
-	lastEvent atomic.Value // time.Time
-	startedAt time.Time
+	eventsIn       atomic.Int64
+	eventsOut      atomic.Int64
+	errors         atomic.Int64
+	dlqCount       atomic.Int64
+	schemaFails    atomic.Int64
+	lastEvent      atomic.Value // time.Time
+	startedAt      time.Time
 
 	// Control
 	state  atomic.Value // v1.PipelineState
@@ -83,6 +86,11 @@ func New(spec v1.Pipeline, source Source, chain *transform.Chain, sinks []Sink) 
 // SetDLQ configures a Dead Letter Queue sink for failed events.
 func (p *Pipeline) SetDLQ(dlq Sink) {
 	p.dlq = dlq
+}
+
+// SetSchemaValidator configures Schema Registry validation for incoming events.
+func (p *Pipeline) SetSchemaValidator(v *schema.Validator) {
+	p.schemaValidator = v
 }
 
 // Start begins pipeline execution.
@@ -171,6 +179,22 @@ func (p *Pipeline) eventLoop(ctx context.Context, eventCh <-chan *Event, batchSi
 
 			p.eventsIn.Add(1)
 			p.lastEvent.Store(time.Now())
+
+			// Schema validation (if configured)
+			if p.schemaValidator != nil && p.schemaValidator.Enforce() {
+				vResult, vErr := p.schemaValidator.Validate(ctx, event.Value)
+				if vErr != nil {
+					p.errors.Add(1)
+					p.schemaFails.Add(1)
+					p.handleTransformError(ctx, fmt.Errorf("schema validation: %w", vErr), event)
+					continue
+				}
+				if !vResult.Valid {
+					p.schemaFails.Add(1)
+					p.handleTransformError(ctx, fmt.Errorf("schema validation failed: %v", vResult.Errors), event)
+					continue
+				}
+			}
 
 			// Apply transform chain
 			result, err := p.chain.Apply(event.Value)
