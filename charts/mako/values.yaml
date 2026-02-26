@@ -1,0 +1,139 @@
+# Default values for Mako Helm chart.
+
+# -- Number of pipeline replicas
+replicaCount: 1
+
+image:
+  # -- Container image repository
+  repository: ghcr.io/stefen-taime/mako
+  # -- Image pull policy
+  pullPolicy: IfNotPresent
+  # -- Image tag (defaults to Chart appVersion)
+  tag: ""
+
+# -- Image pull secrets for private registries
+imagePullSecrets: []
+# -- Override the chart name
+nameOverride: ""
+# -- Override the full release name
+fullnameOverride: ""
+
+serviceAccount:
+  # -- Create a ServiceAccount
+  create: true
+  # -- Annotations for the ServiceAccount
+  annotations: {}
+  # -- ServiceAccount name (auto-generated if empty)
+  name: ""
+
+# -- Pod annotations
+podAnnotations: {}
+
+# -- Pod security context
+podSecurityContext: {}
+
+# -- Container security context
+securityContext: {}
+
+# ═══════════════════════════════════════════
+# Pipeline configuration
+# ═══════════════════════════════════════════
+
+pipeline:
+  # -- Inline pipeline.yaml content.
+  # If set, a ConfigMap is created and mounted at /etc/mako/pipeline.yaml
+  config: |
+    apiVersion: mako/v1
+    kind: Pipeline
+
+    pipeline:
+      name: my-pipeline
+      owner: team
+
+      source:
+        type: kafka
+        topic: events.input
+        brokers: kafka:9092
+        group: mako-consumer
+        startOffset: earliest
+
+      transforms: []
+
+      sink:
+        type: stdout
+
+      monitoring:
+        metrics:
+          enabled: true
+          port: 9090
+
+  # -- Extra environment variables injected into the container.
+  # Use this for secrets (DB passwords, API keys) via secretKeyRef.
+  env: []
+  #  - name: POSTGRES_DSN
+  #    valueFrom:
+  #      secretKeyRef:
+  #        name: mako-secrets
+  #        key: postgres-dsn
+  #  - name: SNOWFLAKE_DSN
+  #    value: user:pass@account/db/schema
+
+  # -- Extra volumes to mount (e.g. WASM plugin files)
+  extraVolumes: []
+  # - name: wasm-plugins
+  #   configMap:
+  #     name: mako-wasm-plugins
+
+  # -- Extra volume mounts
+  extraVolumeMounts: []
+  # - name: wasm-plugins
+  #   mountPath: /etc/mako/plugins
+
+# ═══════════════════════════════════════════
+# Metrics / Monitoring
+# ═══════════════════════════════════════════
+
+metrics:
+  # -- Enable Prometheus metrics endpoint
+  enabled: true
+  # -- Metrics port (must match pipeline.monitoring.metrics.port)
+  port: 9090
+
+  serviceMonitor:
+    # -- Create a Prometheus ServiceMonitor resource
+    enabled: false
+    # -- Scrape interval
+    interval: 15s
+    # -- Additional labels for ServiceMonitor (e.g. release: kube-prometheus-stack)
+    labels: {}
+
+# ═══════════════════════════════════════════
+# Service
+# ═══════════════════════════════════════════
+
+service:
+  # -- Service type
+  type: ClusterIP
+  # -- Metrics port exposed by the Service
+  port: 9090
+
+# ═══════════════════════════════════════════
+# Resources
+# ═══════════════════════════════════════════
+
+resources: {}
+#  requests:
+#    cpu: 100m
+#    memory: 128Mi
+#  limits:
+#    cpu: 500m
+#    memory: 512Mi
+
+# -- Node selector
+nodeSelector: {}
+
+# -- Tolerations
+tolerations: []
+
+# -- Affinity rules
+affinity: {}

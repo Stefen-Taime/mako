@@ -133,6 +133,18 @@ func buildTransform(spec v1.Transform, opts *options) (Func, error) {
 		// Aggregation is handled at the pipeline level (windowing)
 		return passthroughTransform(), nil
 
+	case v1.TransformPlugin:
+		path, _ := spec.Config["path"].(string)
+		if path == "" {
+			return nil, fmt.Errorf("plugin transform requires config.path (path to .wasm file)")
+		}
+		funcName, _ := spec.Config["function"].(string)
+		wt, err := NewWASMTransform(path, funcName)
+		if err != nil {
+			return nil, fmt.Errorf("wasm plugin: %w", err)
+		}
+		return wt.Func(), nil
+
 	default:
 		return nil, fmt.Errorf("unsupported transform type: %s", spec.Type)
 	}

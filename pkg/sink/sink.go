@@ -130,6 +130,12 @@ func BuildFromSpec(spec v1.Sink) (pipeline.Sink, error) {
 			brokers, _ = spec.Config["brokers"].(string)
 		}
 		return NewKafkaSink(brokers, spec.Topic), nil
+	case v1.SinkS3:
+		return NewS3Sink(spec.Bucket, spec.Prefix, spec.Format, spec.Config), nil
+	case v1.SinkGCS:
+		return NewGCSSink(spec.Bucket, spec.Prefix, spec.Format, spec.Config), nil
+	case v1.SinkClickHouse:
+		return NewClickHouseSink(spec.Database, spec.Table, spec.Config), nil
 	default:
 		return nil, fmt.Errorf("unsupported sink type: %s", spec.Type)
 	}

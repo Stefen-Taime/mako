@@ -1,0 +1,17 @@
+apiVersion: v2
+name: mako
+description: Declarative real-time data pipelines — Kafka to anywhere in minutes
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+keywords:
+  - data-pipeline
+  - kafka
+  - streaming
+  - etl
+  - real-time
+home: https://github.com/Stefen-Taime/mako
+sources:
+  - https://github.com/Stefen-Taime/mako
+maintainers:
+  - name: Stefen Taime

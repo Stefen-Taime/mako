@@ -1,0 +1,15 @@
+Mako pipeline deployed successfully!
+
+Pipeline: {{ include "mako.fullname" . }}
+{{- if .Values.metrics.enabled }}
+
+Metrics endpoint:
+  kubectl port-forward svc/{{ include "mako.fullname" . }} {{ .Values.service.port }}:{{ .Values.service.port }}
+  curl http://localhost:{{ .Values.service.port }}/metrics
+{{- end }}
+
+View logs:
+  kubectl logs -f deploy/{{ include "mako.fullname" . }}
+
+Pipeline config is mounted from ConfigMap:
+  kubectl get configmap {{ include "mako.fullname" . }}-config -o yaml
