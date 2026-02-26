@@ -1,8 +1,7 @@
-// Package sink implements output adapters for Iguazu pipelines.
+// Package sink implements output adapters for Mako pipelines.
 //
 // Each sink implements the pipeline.Sink interface.
-// DoorDash: Snowpipe → Snowflake as primary sink.
-// Iguazu supports multiple sinks per pipeline.
+// Mako supports multiple sinks per pipeline.
 package sink
 
 import (
@@ -114,8 +113,6 @@ func (s *FileSink) Name() string { return "file:" + s.path }
 // ═══════════════════════════════════════════
 
 // SnowflakeSink writes events to Snowflake via Snowpipe or INSERT.
-// DoorDash pattern: "Snowpipe for loading into Snowflake, reducing
-// latency from 1 day to minutes."
 type SnowflakeSink struct {
 	database string
 	schema   string

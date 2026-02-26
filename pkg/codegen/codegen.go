@@ -1,10 +1,6 @@
 // Package codegen generates deployment artifacts from pipeline specs.
 //
-// DoorDash: "Onboarding new events is entirely automated via GitHub
-// automation + Terraform: create Kafka topic, register schema,
-// setup Flink job, create Snowflake objects."
-//
-// Iguazu codegen does the same: pipeline.yaml → K8s manifests + Terraform.
+// pipeline.yaml → K8s manifests + Terraform HCL.
 package codegen
 
 import (

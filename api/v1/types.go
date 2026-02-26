@@ -1,8 +1,7 @@
 // Package v1 defines the Mako Pipeline Specification.
 //
 // This is the declarative YAML DSL that users write to define
-// real-time data pipelines. Inspired by DoorDash's Riviera framework
-// which reduced codebase size by 70% through declarative abstractions.
+// real-time data pipelines.
 //
 // Example:
 //
@@ -22,10 +21,10 @@ package v1
 
 import "time"
 
-// PipelineSpec is the top-level specification for an Iguazu pipeline.
+// PipelineSpec is the top-level specification for a Mako pipeline.
 // One YAML file = one pipeline = one isolated processing unit.
-// This mirrors DoorDash's principle: "each event type gets its own
-// Flink job, so an anomaly on one event doesn't block all others."
+// Each event type gets its own worker, so an anomaly on one event
+// doesn't block all others.
 type PipelineSpec struct {
 	APIVersion string   `yaml:"apiVersion" json:"apiVersion"` // mako/v1
 	Kind       string   `yaml:"kind" json:"kind"`             // Pipeline
@@ -53,8 +52,8 @@ type Pipeline struct {
 // ═══════════════════════════════════════════
 
 // Source defines where the pipeline reads events from.
-// DoorDash pattern: Kafka is the universal bus. Every event
-// flows through Kafka before any processing.
+// Kafka is the default event bus. Every event flows through
+// Kafka before any processing.
 type Source struct {
 	Type   SourceType        `yaml:"type" json:"type"`
 	Config map[string]any    `yaml:"config,omitempty" json:"config,omitempty"`
@@ -66,7 +65,7 @@ type Source struct {
 	Brokers       string `yaml:"brokers,omitempty" json:"brokers,omitempty"`
 	StartOffset   string `yaml:"startOffset,omitempty" json:"startOffset,omitempty"` // earliest|latest
 
-	// Schema enforcement (DoorDash: "Protobuf at 300+ columns")
+	// Schema enforcement (protobuf, avro, json)
 	Schema string `yaml:"schema,omitempty" json:"schema,omitempty"` // protobuf://path, avro://path, json://path
 }
 
@@ -84,8 +83,8 @@ const (
 // ═══════════════════════════════════════════
 
 // Transform defines a single processing step in the pipeline.
-// DoorDash Riviera: "YAML DSL for feature engineering, reducing
-// iteration cycles from weeks to hours."
+// Declarative YAML DSL for data transformation, reducing
+// iteration cycles from weeks to hours.
 type Transform struct {
 	Name   string        `yaml:"name" json:"name"`
 	Type   TransformType `yaml:"type" json:"type"`
@@ -116,7 +115,7 @@ const (
 	TransformFlatten    TransformType = "flatten"        // Flatten nested structs
 	TransformDefault    TransformType = "default_values" // Fill nulls
 
-	// Aggregation (Riviera feature engineering)
+	// Aggregation
 	TransformAggregate  TransformType = "aggregate"      // Window aggregations
 	TransformDedupe     TransformType = "deduplicate"    // Deduplication by key
 
@@ -124,7 +123,7 @@ const (
 	TransformPlugin     TransformType = "plugin"         // User-supplied WASM/Go plugin
 )
 
-// WindowSpec defines windowing for aggregations (Riviera pattern).
+// WindowSpec defines windowing for aggregations.
 type WindowSpec struct {
 	Type     string `yaml:"type" json:"type"`         // tumbling|sliding|session
 	Size     string `yaml:"size" json:"size"`         // 5m, 1h, 1d
@@ -140,7 +139,7 @@ type WindowSpec struct {
 // ═══════════════════════════════════════════
 
 // Sink defines the destination for processed events.
-// DoorDash: Snowpipe → Snowflake. But Iguazu supports multiple sinks.
+// Mako supports multiple sinks per pipeline.
 type Sink struct {
 	Name   string            `yaml:"name,omitempty" json:"name,omitempty"`
 	Type   SinkType          `yaml:"type" json:"type"`
@@ -188,8 +187,6 @@ type BatchSpec struct {
 // ═══════════════════════════════════════════
 
 // SchemaSpec defines schema enforcement rules.
-// DoorDash: "Protobuf schemas at 300+ columns, enforced end-to-end
-// via Schema Registry."
 type SchemaSpec struct {
 	Registry      string `yaml:"registry,omitempty" json:"registry,omitempty"`
 	Subject       string `yaml:"subject,omitempty" json:"subject,omitempty"`
@@ -204,7 +201,7 @@ type SchemaSpec struct {
 // ═══════════════════════════════════════════
 
 // IsolationSpec controls fault isolation.
-// DoorDash principle: "Each event type gets its own Flink job."
+// Each pipeline runs independently for maximum resilience.
 type IsolationSpec struct {
 	Strategy string `yaml:"strategy,omitempty" json:"strategy,omitempty"` // per_event_type|shared|dedicated
 	MaxRetries int  `yaml:"maxRetries,omitempty" json:"maxRetries,omitempty"`
@@ -217,7 +214,6 @@ type IsolationSpec struct {
 // ═══════════════════════════════════════════
 
 // MonitoringSpec defines observability for the pipeline.
-// Inspired by Vimeo's Monte Carlo pattern + DoorDash's SLA monitoring.
 type MonitoringSpec struct {
 	FreshnessSLA  string            `yaml:"freshnessSLA,omitempty" json:"freshnessSLA,omitempty"` // 5m, 1h
 	AlertChannel  string            `yaml:"alertChannel,omitempty" json:"alertChannel,omitempty"` // Slack channel

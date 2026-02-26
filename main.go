@@ -1,8 +1,5 @@
 // mako — Declarative Real-Time Data Pipelines
 //
-// Inspired by DoorDash's Iguazu + Riviera frameworks.
-// "From 1 day latency to minutes, 99.99% delivery rate."
-//
 // Usage:
 //
 //	mako init                     # Create starter pipeline.yaml

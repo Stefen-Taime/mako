@@ -1,4 +1,4 @@
-// Package cli implements the Iguazu command-line interface.
+// Package cli implements the Mako command-line interface.
 package cli
 
 import (

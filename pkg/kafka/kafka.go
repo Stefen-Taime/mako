@@ -1,7 +1,6 @@
-// Package kafka implements the Kafka source and sink for Iguazu.
+// Package kafka implements the Kafka source and sink for Mako.
 //
 // Uses franz-go (pure Go, zero CGO) for maximum portability.
-// DoorDash: "Kafka as the universal bus — every event flows through Kafka."
 package kafka
 
 import (

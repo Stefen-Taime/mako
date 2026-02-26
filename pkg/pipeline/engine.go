@@ -1,8 +1,8 @@
-// Package pipeline implements the Iguazu runtime engine.
+// Package pipeline implements the Mako runtime engine.
 //
 // It consumes events from sources, applies transforms in sequence,
-// and delivers to sinks. Each pipeline runs in isolation (DoorDash
-// principle: one job per event type).
+// and delivers to sinks. Each pipeline runs in isolation
+// (one worker per event type).
 package pipeline
 
 import (

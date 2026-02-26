@@ -1,11 +1,7 @@
 // Package transform implements the event transformation engine.
 //
-// This is the heart of the Riviera-style YAML DSL. Each transform
-// is a pure function: map[string]any → map[string]any.
+// Each transform is a pure function: map[string]any → map[string]any.
 // Transforms are chained: the output of one feeds the input of the next.
-//
-// DoorDash Riviera: "reduced codebase by 70% through declarative
-// YAML transforms instead of imperative Flink code."
 package transform
 
 import (

@@ -1,6 +1,5 @@
 # ════════════════════════════════════════════════════════════
 # Advanced Pipeline — Payment Events with Feature Engineering
-# DoorDash Riviera pattern: declarative feature engineering
 # ════════════════════════════════════════════════════════════
 apiVersion: mako/v1
 kind: Pipeline
@@ -62,7 +61,7 @@ pipeline:
       type: deduplicate
       fields: [event_id]
 
-    # Step 8: Real-time aggregation (Riviera feature engineering)
+    # Step 8: Real-time aggregation
     - name: hourly_spend
       type: aggregate
       window:

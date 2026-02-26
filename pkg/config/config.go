@@ -1,5 +1,5 @@
 // Package config handles loading, parsing, and validating
-// Iguazu pipeline YAML specifications.
+// Mako pipeline YAML specifications.
 package config
 
 import (

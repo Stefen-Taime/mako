@@ -22,8 +22,6 @@
 
 ---
 
-Inspired by DoorDash's [Iguazu](https://www.infoq.com/presentations/doordash-iguazu/) + [Riviera](https://doordash.engineering/2024/09/12/building-riviera/) frameworks.
-
 ```yaml
 pipeline:
   name: order-events
@@ -58,11 +56,9 @@ mako generate pipeline.yaml --tf > infra.tf
 
 ## Why Mako?
 
-**The problem:** Every team builds Kafka to warehouse pipelines differently. No schema enforcement, no self-service, no isolation. One bad event breaks everything.
+**The problem:** Every team builds Kafka-to-warehouse pipelines differently. No schema enforcement, no self-service, no isolation. One bad event breaks everything.
 
-**DoorDash had this exact problem** — and solved it by building Iguazu (event routing) + Riviera (feature engineering DSL).
-
-**Mako** is an open-source framework built on those same ideas:
+**Mako** solves this with a declarative approach:
 
 | Concept | Mako |
 |---|---|
@@ -323,14 +319,6 @@ mako/
 - [ ] Helm chart
 - [ ] Grafana dashboard templates
 - [ ] WASM plugin transforms
-
----
-
-## References
-
-- [DoorDash: Building Scalable Real Time Event Processing with Kafka and Flink](https://www.infoq.com/presentations/doordash-iguazu/) — Allen Wang, InfoQ 2023
-- [Building Riviera: A Declarative Real-Time Feature Engineering Framework](https://doordash.engineering/2024/09/12/building-riviera/) — DoorDash Engineering Blog
-- [Iguazu Architecture Overview](https://junaideffendi.com/p/doordash-event-processing) — Junaid Effendi
 
 ---
 
