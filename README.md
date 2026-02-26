@@ -14,10 +14,13 @@
 
 <p align="center">
   <a href="#quick-start">Quick Start</a> &middot;
+  <a href="#sources">Sources</a> &middot;
   <a href="#transforms">Transforms</a> &middot;
+  <a href="#sinks">Sinks</a> &middot;
+  <a href="#observability">Observability</a> &middot;
   <a href="#local-infrastructure">Local Infra</a> &middot;
   <a href="#codegen">Codegen</a> &middot;
-  <a href="#roadmap">Roadmap</a>
+  <a href="#ci--testing">CI</a>
 </p>
 
 ---
@@ -42,12 +45,15 @@ pipeline:
     table: ORDER_EVENTS
   monitoring:
     freshnessSLA: 5m
-    alertChannel: "#data-alerts"
+    metrics:
+      enabled: true
+      port: 9090
 ```
 
 ```bash
 mako validate pipeline.yaml
 mako dry-run pipeline.yaml < events.jsonl
+mako run pipeline.yaml
 mako generate pipeline.yaml --k8s > deploy.yaml
 mako generate pipeline.yaml --tf > infra.tf
 ```
@@ -62,12 +68,15 @@ mako generate pipeline.yaml --tf > infra.tf
 
 | Concept | Mako |
 |---|---|
-| Source | YAML-defined Kafka sources |
+| Sources | Kafka (franz-go), File (JSONL, CSV, JSON) |
 | Isolation | Per-pipeline Go workers |
 | Transforms | Declarative: hash, mask, filter, rename, dedupe, SQL, aggregate |
-| Sinks | Stdout, File, Snowflake, BigQuery, Kafka, PostgreSQL |
+| Sinks | PostgreSQL (pgx), Snowflake (gosnowflake), BigQuery (streaming), Kafka, Stdout, File |
+| Schema | Confluent Schema Registry (JSON Schema validation) |
+| Observability | Prometheus /metrics, /health, /ready, /status |
 | Codegen | `mako generate --k8s` + `--tf` |
 | Fault tolerance | DLQ + retries + exponential backoff |
+| CI | GitHub Actions with integration tests (Kafka, PG, Schema Registry) |
 
 ---
 
@@ -89,6 +98,9 @@ go build -o bin/mako .
 echo '{"email":"john@test.com","amount":99.99,"status":"completed","environment":"production"}' | \
   ./bin/mako dry-run pipeline.yaml
 
+# Run pipeline (Kafka -> transforms -> sink)
+./bin/mako run pipeline.yaml
+
 # Generate Kubernetes manifests
 ./bin/mako generate pipeline.yaml --k8s > deploy.yaml
 
@@ -102,6 +114,49 @@ echo '{"email":"john@test.com","amount":99.99,"status":"completed","environment"
 ```
 
 The email is hashed (PII compliance), the event passes the production filter, and it's ready for the warehouse.
+
+---
+
+## Sources
+
+### Kafka (default)
+
+Real-time consumer using [franz-go](https://github.com/twmb/franz-go) (pure Go, zero CGO).
+
+```yaml
+source:
+  type: kafka
+  topic: events.orders
+  brokers: localhost:9092
+  consumerGroup: mako-order-events
+  startOffset: earliest    # earliest | latest
+```
+
+Features:
+- Consumer group with manual offset commit
+- Automatic JSON parsing (non-JSON wrapped as `_raw`)
+- Header propagation
+- Graceful shutdown with offset commit
+
+### File (JSONL, CSV, JSON)
+
+Read events from local files. Useful for backfill, testing, and batch processing.
+
+```yaml
+source:
+  type: file
+  config:
+    path: /data/events.jsonl           # single file
+    # path: /data/events/*.jsonl       # glob pattern supported
+    format: jsonl                       # jsonl | csv | json (auto-detected)
+    csv_header: true                    # first line is header (CSV)
+    csv_delimiter: ","                  # field separator (CSV)
+```
+
+Supported formats:
+- **JSONL** (`.jsonl`, `.ndjson`): one JSON object per line
+- **CSV** (`.csv`): with optional header row, configurable delimiter
+- **JSON** (`.json`): single object or array of objects
 
 ---
 
@@ -146,18 +201,6 @@ transforms:
       ts: event_timestamp
       cust_id: customer_id
 
-  # Type casting
-  - name: types
-    type: cast_fields
-    mapping:
-      amount: float
-      customer_id: string
-
-  # SQL enrichment (SELECT *, arithmetic, CASE WHEN)
-  - name: enrich
-    type: sql
-    query: "SELECT *, amount * 1.15 as amount_with_tax FROM events"
-
   # Deduplication by key
   - name: dedupe
     type: deduplicate
@@ -166,7 +209,79 @@ transforms:
 
 ---
 
-## Multi-Sink
+## Sinks
+
+### PostgreSQL (pgx)
+
+High-performance sink using [pgx](https://github.com/jackc/pgx) with connection pooling and COPY protocol.
+
+```yaml
+sink:
+  type: postgres
+  database: mako
+  schema: analytics
+  table: pipeline_events
+  config:
+    host: localhost
+    port: "5432"
+    user: mako
+    password: mako
+    # Or use a full DSN:
+    # dsn: postgres://mako:mako@localhost:5432/mako
+```
+
+Features: `pgxpool` connection pool, bulk `COPY FROM` with batch INSERT fallback, automatic JSONB serialization.
+
+### Snowflake (gosnowflake)
+
+Production sink using the official [gosnowflake](https://github.com/snowflakedb/gosnowflake) driver.
+
+```yaml
+sink:
+  type: snowflake
+  database: ANALYTICS
+  schema: RAW
+  table: ORDER_EVENTS
+  config:
+    account: xy12345.us-east-1
+    user: MAKO_USER
+    password: ${SNOWFLAKE_PASSWORD}
+    warehouse: COMPUTE_WH
+    role: MAKO_ROLE
+    # Or use a full DSN:
+    # dsn: user:password@account/database/schema?warehouse=WH
+```
+
+Events stored as `VARIANT` (JSON) via `PARSE_JSON()`. Target table schema:
+
+```sql
+CREATE TABLE ORDER_EVENTS (
+    event_data    VARIANT NOT NULL,
+    event_key     VARCHAR,
+    event_topic   VARCHAR,
+    event_offset  NUMBER,
+    loaded_at     TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP()
+);
+```
+
+### BigQuery (streaming inserter)
+
+Streaming sink using `cloud.google.com/go/bigquery` with deduplication.
+
+```yaml
+sink:
+  type: bigquery
+  schema: raw_events        # BigQuery dataset
+  table: events
+  config:
+    project: my-gcp-project
+```
+
+Authentication via Application Default Credentials (ADC). Set `GOOGLE_APPLICATION_CREDENTIALS` or run `gcloud auth application-default login`.
+
+Features: streaming inserter with per-row `InsertID` dedup, `PutMultiError` handling, JSON-column alternative mode.
+
+### Multi-Sink
 
 Send events to multiple destinations simultaneously:
 
@@ -182,13 +297,37 @@ sinks:
     type: bigquery
     schema: raw_events
     table: events
+    config:
+      project: my-project
 
   - name: downstream
     type: kafka
     topic: events.orders.enriched
 ```
 
-**Supported sinks:** stdout, file, Snowflake, BigQuery, PostgreSQL, Kafka.
+**All sinks:** stdout, file, PostgreSQL, Snowflake, BigQuery, Kafka.
+
+---
+
+## Schema Enforcement
+
+Validate events against Confluent Schema Registry at runtime.
+
+```yaml
+schema:
+  enforce: true
+  registry: http://schema-registry:8081
+  subject: events.orders-value
+  compatibility: BACKWARD
+  onFailure: reject     # reject | dlq | log
+  dlqTopic: events.orders.dlq
+```
+
+Features:
+- JSON Schema validation with type checking
+- Required fields enforcement
+- Schema caching (fetched once, refreshable)
+- Failed events routed to DLQ or rejected
 
 ---
 
@@ -202,13 +341,59 @@ isolation:
   maxRetries: 3
   backoffMs: 1000
   dlqEnabled: true
+```
 
-schema:
-  enforce: true
-  registry: http://schema-registry:8081
-  compatibility: BACKWARD
-  onFailure: dlq
-  dlqTopic: events.orders.dlq
+Retry flow: sink write failure → exponential backoff → retry (up to N times) → DLQ → degrade state.
+
+---
+
+## Observability
+
+When running `mako run`, an HTTP server exposes Prometheus metrics, health probes, and pipeline status.
+
+```yaml
+monitoring:
+  freshnessSLA: 5m
+  alertChannel: "#data-alerts"
+  metrics:
+    enabled: true
+    port: 9090
+```
+
+### Endpoints
+
+| Endpoint | Description | Use |
+|----------|-------------|-----|
+| `GET /metrics` | Prometheus text format | Scraping by Prometheus/Grafana |
+| `GET /health` | Liveness probe (always 200) | Kubernetes `livenessProbe` |
+| `GET /ready` | Readiness probe (200 when pipeline running) | Kubernetes `readinessProbe` |
+| `GET /status` | Pipeline status JSON | Monitoring dashboards |
+
+### Prometheus Metrics
+
+```
+mako_events_in_total{pipeline="order-events"} 15234
+mako_events_out_total{pipeline="order-events"} 15230
+mako_errors_total{pipeline="order-events"} 4
+mako_dlq_total{pipeline="order-events"} 2
+mako_schema_failures_total{pipeline="order-events"} 1
+mako_throughput_events_per_second{pipeline="order-events"} 1523.40
+mako_uptime_seconds{pipeline="order-events"} 3600.0
+mako_pipeline_ready{pipeline="order-events"} 1
+```
+
+### Kubernetes Probes
+
+```yaml
+# In generated K8s manifest (mako generate --k8s)
+livenessProbe:
+  httpGet:
+    path: /health
+    port: 9090
+readinessProbe:
+  httpGet:
+    path: /ready
+    port: 9090
 ```
 
 ---
@@ -246,7 +431,28 @@ docker compose up -d           # Start all services
 | Flink SQL | `localhost:8082` | Stream processing dashboard |
 | Kafka UI | `localhost:8080` | Web UI for topics and messages |
 
-See [docker/README.md](docker/README.md) for full documentation.
+---
+
+## CI / Testing
+
+GitHub Actions runs on every push/PR:
+
+**Unit tests** (fast, no Docker):
+- 25+ tests covering config, validation, transforms, codegen
+- Benchmarks for transform chain performance
+- Example validation + dry-run
+
+**Integration tests** (Docker services):
+- Kafka (KRaft) + PostgreSQL + Schema Registry
+- Full pipeline: produce messages → consume → transform → write to PG
+- HTTP endpoint verification (/metrics, /health, /ready, /status)
+- File source validation
+
+```bash
+# Run locally
+go test -v -count=1 ./...
+go test -bench=. -benchmem ./...
+```
 
 ---
 
@@ -268,15 +474,16 @@ pipeline.yaml
   +------------------------------------------+
   |  mako-runner (per-pipeline container)    |
   |                                          |
-  |  Source (Kafka) --> Transform Chain --> Sink(s)
-  |       |               |                  |
-  |       |    hash_fields | stdout          |
-  |       |    mask_fields | file            |
-  |       |    filter      | Snowflake       |
-  |       |    rename      | BigQuery        |
-  |       |    deduplicate | PostgreSQL      |
-  |       |    sql         | Kafka           |
-  |       |                                  |
+  |  Source ──> Transform Chain ──> Sink(s)  |
+  |  (Kafka)    hash_fields        Postgres  |
+  |  (File)     mask_fields        Snowflake |
+  |             filter             BigQuery  |
+  |             rename             Kafka     |
+  |             deduplicate        Stdout    |
+  |                                          |
+  |  Schema Registry ──> Validate            |
+  |  Prometheus    ──> /metrics              |
+  |  Health        ──> /health, /ready       |
   |  DLQ + Retries + Backoff                 |
   +------------------------------------------+
 ```
@@ -287,18 +494,28 @@ pipeline.yaml
 
 ```
 mako/
-├── api/v1/types.go              # Pipeline spec (the YAML DSL model)
+├── api/v1/types.go                 # Pipeline spec (the YAML DSL model)
 ├── pkg/
-│   ├── config/config.go         # YAML parser + validator
-│   ├── pipeline/engine.go       # Runtime: Source -> Transforms -> Sink
-│   ├── transform/transform.go   # Transform implementations
-│   ├── sink/sink.go             # Sink adapters
-│   ├── kafka/kafka.go           # Kafka source + sink
-│   └── codegen/codegen.go       # K8s + Terraform generators
-├── internal/cli/cli.go          # CLI helpers
-├── main.go                      # CLI entry point
-├── main_test.go                 # 25 tests + benchmarks
-├── docker/                      # Local infra (Kafka, PostgreSQL, Flink, Schema Registry)
+│   ├── config/config.go            # YAML parser + validator
+│   ├── pipeline/engine.go          # Runtime: Source -> Transforms -> Sink
+│   ├── transform/transform.go      # Transform implementations
+│   ├── source/file.go              # File source (JSONL, CSV, JSON)
+│   ├── sink/
+│   │   ├── sink.go                 # Stdout, File sinks + BuildFromSpec
+│   │   ├── postgres.go             # PostgreSQL sink (pgx)
+│   │   ├── snowflake.go            # Snowflake sink (gosnowflake)
+│   │   └── bigquery.go             # BigQuery sink (streaming inserter)
+│   ├── kafka/kafka.go              # Kafka source + sink (franz-go)
+│   ├── schema/registry.go          # Schema Registry client + validator
+│   ├── observability/server.go     # Prometheus metrics + health + status HTTP
+│   └── codegen/codegen.go          # K8s + Terraform generators
+├── internal/cli/cli.go             # CLI helpers
+├── main.go                         # CLI entry point
+├── main_test.go                    # 25+ tests + benchmarks
+├── docker/                         # Local infra (Kafka, PostgreSQL, Flink, Schema Registry)
+├── .github/workflows/ci.yml        # CI: unit + integration tests
+├── Dockerfile                      # Production image
+├── Dockerfile.runner               # Per-pipeline runner image
 ├── examples/
 │   ├── simple/pipeline.yaml
 │   └── advanced/pipeline.yaml
@@ -309,13 +526,18 @@ mako/
 
 ## Roadmap
 
-- [ ] Full Kafka consumer (franz-go) for `mako run`
-- [ ] PostgreSQL sink (pgx)
-- [ ] Schema Registry validation at runtime
-- [ ] Prometheus metrics endpoint (`/metrics`)
-- [ ] Health probes (`/healthz`, `/readyz`)
-- [ ] Snowflake Snowpipe sink
-- [ ] BigQuery Storage Write API sink
+- [x] Kafka consumer/producer (franz-go)
+- [x] PostgreSQL sink (pgx + COPY)
+- [x] Snowflake sink (gosnowflake)
+- [x] BigQuery sink (streaming inserter)
+- [x] Schema Registry validation (JSON Schema)
+- [x] File source (JSONL, CSV, JSON)
+- [x] Prometheus metrics (/metrics)
+- [x] Health/readiness probes (/health, /ready)
+- [x] Pipeline status API (/status)
+- [x] CI with integration tests (Kafka + PG + Schema Registry)
+- [ ] S3/GCS object storage sink
+- [ ] ClickHouse sink
 - [ ] Helm chart
 - [ ] Grafana dashboard templates
 - [ ] WASM plugin transforms

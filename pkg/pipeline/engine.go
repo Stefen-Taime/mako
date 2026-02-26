@@ -285,6 +285,23 @@ func (p *Pipeline) Status() v1.PipelineStatus {
 	return status
 }
 
+// ═══════════════════════════════════════════
+// Public metric accessors
+// ═══════════════════════════════════════════
+
+// MetricsEventsIn returns the events-in counter (for observability).
+func (p *Pipeline) MetricsEventsIn() *atomic.Int64  { return &p.eventsIn }
+// MetricsEventsOut returns the events-out counter.
+func (p *Pipeline) MetricsEventsOut() *atomic.Int64 { return &p.eventsOut }
+// MetricsErrors returns the errors counter.
+func (p *Pipeline) MetricsErrors() *atomic.Int64    { return &p.errors }
+// MetricsDLQCount returns the DLQ counter.
+func (p *Pipeline) MetricsDLQCount() *atomic.Int64  { return &p.dlqCount }
+// MetricsSchemaFails returns the schema failures counter.
+func (p *Pipeline) MetricsSchemaFails() *atomic.Int64 { return &p.schemaFails }
+// StartTime returns when the pipeline started.
+func (p *Pipeline) StartTime() time.Time { return p.startedAt }
+
 // handleError handles sink write errors with retry/DLQ logic.
 func (p *Pipeline) handleError(ctx context.Context, err error, batch []*Event) {
 	maxRetries := p.spec.Isolation.MaxRetries

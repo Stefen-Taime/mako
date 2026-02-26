@@ -19,14 +19,17 @@ import (
 	"path/filepath"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/Stefen-Taime/mako/internal/cli"
 	"github.com/Stefen-Taime/mako/pkg/codegen"
 	"github.com/Stefen-Taime/mako/pkg/config"
 	"github.com/Stefen-Taime/mako/pkg/kafka"
+	"github.com/Stefen-Taime/mako/pkg/observability"
 	"github.com/Stefen-Taime/mako/pkg/pipeline"
 	"github.com/Stefen-Taime/mako/pkg/schema"
 	"github.com/Stefen-Taime/mako/pkg/sink"
+	"github.com/Stefen-Taime/mako/pkg/source"
 	"github.com/Stefen-Taime/mako/pkg/transform"
 )
 
@@ -510,12 +513,14 @@ func cmdRun(args []string) error {
 		brokers = "localhost:9092"
 	}
 
-	var source pipeline.Source
+	var src pipeline.Source
 	switch p.Source.Type {
 	case "kafka":
-		source = kafka.NewSource(brokers, p.Source.Topic, p.Source.ConsumerGroup, p.Source.StartOffset)
+		src = kafka.NewSource(brokers, p.Source.Topic, p.Source.ConsumerGroup, p.Source.StartOffset)
+	case "file":
+		src = source.NewFileSource(p.Source.Config)
 	default:
-		return fmt.Errorf("unsupported source type for run: %s (supported: kafka)", p.Source.Type)
+		return fmt.Errorf("unsupported source type for run: %s (supported: kafka, file)", p.Source.Type)
 	}
 
 	// Build sinks
@@ -539,7 +544,7 @@ func cmdRun(args []string) error {
 	}
 
 	// Create and start pipeline
-	pipe := pipeline.New(p, source, chain, sinks)
+	pipe := pipeline.New(p, src, chain, sinks)
 
 	// Configure DLQ if enabled
 	if p.Isolation.DLQEnabled {
@@ -584,15 +589,68 @@ func cmdRun(args []string) error {
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 
+	// Start observability server (metrics + health + status)
+	metricsPort := 9090
+	if p.Monitoring != nil && p.Monitoring.Metrics != nil && p.Monitoring.Metrics.Port > 0 {
+		metricsPort = p.Monitoring.Metrics.Port
+	}
+	metricsEnabled := true
+	if p.Monitoring != nil && p.Monitoring.Metrics != nil {
+		metricsEnabled = p.Monitoring.Metrics.Enabled
+	}
+
+	var obsSrv *observability.Server
+	if metricsEnabled {
+		obsSrv = observability.NewServer(fmt.Sprintf(":%d", metricsPort), p.Name)
+		obsSrv.SetStatusFn(func() map[string]any {
+			st := pipe.Status()
+			return map[string]any{
+				"state":     st.State,
+				"source":    map[string]any{"connected": st.Source.Connected, "lag": st.Source.Lag},
+				"events_in": st.EventsIn, "events_out": st.EventsOut, "errors": st.Errors,
+			}
+		})
+		if err := obsSrv.Start(); err != nil {
+			fmt.Fprintf(os.Stderr, "⚠️  Metrics server failed: %v\n", err)
+		}
+	}
+
 	fmt.Fprintf(os.Stderr, "🦈 Mako Pipeline Runner v%s\n", cli.Version)
 	fmt.Fprintf(os.Stderr, "📋 Pipeline: %s\n", p.Name)
 	fmt.Fprintf(os.Stderr, "📥 Source:    %s (%s)\n", p.Source.Type, p.Source.Topic)
 	fmt.Fprintf(os.Stderr, "🔧 Transforms: %d steps\n", chain.Len())
 	fmt.Fprintf(os.Stderr, "📤 Sinks:    %d configured\n", len(sinks))
+	if obsSrv != nil {
+		fmt.Fprintf(os.Stderr, "📊 Metrics:  http://localhost:%d/metrics\n", metricsPort)
+		fmt.Fprintf(os.Stderr, "💚 Health:   http://localhost:%d/health\n", metricsPort)
+		fmt.Fprintf(os.Stderr, "📋 Status:   http://localhost:%d/status\n", metricsPort)
+	}
 	fmt.Fprintf(os.Stderr, "🚀 Starting pipeline...\n\n")
 
 	if err := pipe.Start(ctx); err != nil {
 		return fmt.Errorf("start pipeline: %w", err)
+	}
+
+	// Sync metrics from pipeline counters to observability server
+	if obsSrv != nil {
+		obsSrv.SetReady(true)
+		// Sync pipeline counters to observability server periodically
+		go func() {
+			ticker := time.NewTicker(time.Second)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-ticker.C:
+					obsSrv.Metrics().EventsIn.Store(pipe.MetricsEventsIn().Load())
+					obsSrv.Metrics().EventsOut.Store(pipe.MetricsEventsOut().Load())
+					obsSrv.Metrics().Errors.Store(pipe.MetricsErrors().Load())
+					obsSrv.Metrics().DLQCount.Store(pipe.MetricsDLQCount().Load())
+					obsSrv.Metrics().SchemaFails.Store(pipe.MetricsSchemaFails().Load())
+				}
+			}
+		}()
 	}
 
 	fmt.Fprintf(os.Stderr, "✅ Pipeline running. Press Ctrl+C to stop.\n")
@@ -600,6 +658,11 @@ func cmdRun(args []string) error {
 	// Wait for shutdown signal
 	<-sigCh
 	fmt.Fprintf(os.Stderr, "\n⏹️  Shutting down gracefully...\n")
+
+	if obsSrv != nil {
+		obsSrv.SetReady(false)
+		obsSrv.Stop()
+	}
 
 	if err := pipe.Stop(); err != nil {
 		return fmt.Errorf("stop pipeline: %w", err)
