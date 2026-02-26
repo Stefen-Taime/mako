@@ -1,0 +1,7 @@
+bin/
+.iguazu/
+*.exe
+*.test
+*.out
+coverage.txt
+dist/

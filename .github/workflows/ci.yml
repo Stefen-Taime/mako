@@ -1,0 +1,50 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+
+      - name: Test
+        run: go test -v -race -coverprofile=coverage.txt ./...
+
+      - name: Benchmark
+        run: go test -bench=. -benchmem ./...
+
+      - name: Build
+        run: go build -o bin/mako .
+
+      - name: Validate examples
+        run: |
+          ./bin/mako validate examples/simple/pipeline.yaml
+          ./bin/mako validate examples/advanced/pipeline.yaml
+
+      - name: Dry-run with fixtures
+        run: cat test/fixtures/events.jsonl | ./bin/mako dry-run examples/simple/pipeline.yaml
+
+  release:
+    needs: test
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+      - uses: goreleaser/goreleaser-action@v5
+        with:
+          version: latest
+          args: release --clean
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

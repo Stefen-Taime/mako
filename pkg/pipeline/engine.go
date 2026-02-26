@@ -1,0 +1,318 @@
+// Package pipeline implements the Iguazu runtime engine.
+//
+// It consumes events from sources, applies transforms in sequence,
+// and delivers to sinks. Each pipeline runs in isolation (DoorDash
+// principle: one job per event type).
+package pipeline
+
+import (
+	"context"
+	"fmt"
+	"sync"
+	"sync/atomic"
+	"time"
+
+	v1 "github.com/Stefen-Taime/mako/api/v1"
+	"github.com/Stefen-Taime/mako/pkg/transform"
+)
+
+// Event represents a single event flowing through the pipeline.
+type Event struct {
+	Key       []byte
+	Value     map[string]any
+	RawValue  []byte
+	Timestamp time.Time
+	Topic     string
+	Partition int32
+	Offset    int64
+	Headers   map[string]string
+	Metadata  map[string]any
+}
+
+// Source reads events from an external system.
+type Source interface {
+	Open(ctx context.Context) error
+	Read(ctx context.Context) (<-chan *Event, error)
+	Close() error
+	Lag() int64
+}
+
+// Sink writes events to an external system.
+type Sink interface {
+	Open(ctx context.Context) error
+	Write(ctx context.Context, events []*Event) error
+	Flush(ctx context.Context) error
+	Close() error
+	Name() string
+}
+
+// Pipeline is the core runtime that connects Source → Transforms → Sink(s).
+type Pipeline struct {
+	spec   v1.Pipeline
+	source Source
+	chain  *transform.Chain
+	sinks  []Sink
+	dlq    Sink // Dead Letter Queue sink (optional)
+
+	// Metrics
+	eventsIn  atomic.Int64
+	eventsOut atomic.Int64
+	errors    atomic.Int64
+	dlqCount  atomic.Int64
+	lastEvent atomic.Value // time.Time
+	startedAt time.Time
+
+	// Control
+	state  atomic.Value // v1.PipelineState
+	cancel context.CancelFunc
+	wg     sync.WaitGroup
+}
+
+// New creates a new pipeline from a spec, source, transforms, and sinks.
+func New(spec v1.Pipeline, source Source, chain *transform.Chain, sinks []Sink) *Pipeline {
+	p := &Pipeline{
+		spec:   spec,
+		source: source,
+		chain:  chain,
+		sinks:  sinks,
+	}
+	p.state.Store(v1.StateStopped)
+	return p
+}
+
+// SetDLQ configures a Dead Letter Queue sink for failed events.
+func (p *Pipeline) SetDLQ(dlq Sink) {
+	p.dlq = dlq
+}
+
+// Start begins pipeline execution.
+func (p *Pipeline) Start(ctx context.Context) error {
+	ctx, p.cancel = context.WithCancel(ctx)
+	p.startedAt = time.Now()
+	p.state.Store(v1.StateStarting)
+
+	// Open source
+	if err := p.source.Open(ctx); err != nil {
+		p.state.Store(v1.StateFailed)
+		return fmt.Errorf("open source: %w", err)
+	}
+
+	// Open sinks
+	for _, s := range p.sinks {
+		if err := s.Open(ctx); err != nil {
+			p.state.Store(v1.StateFailed)
+			return fmt.Errorf("open sink %s: %w", s.Name(), err)
+		}
+	}
+
+	// Start event loop
+	eventCh, err := p.source.Read(ctx)
+	if err != nil {
+		p.state.Store(v1.StateFailed)
+		return fmt.Errorf("read source: %w", err)
+	}
+
+	p.state.Store(v1.StateRunning)
+
+	// Batch accumulator
+	batchSize := 1000
+	if p.spec.Sink.Batch != nil && p.spec.Sink.Batch.Size > 0 {
+		batchSize = p.spec.Sink.Batch.Size
+	}
+
+	flushInterval := 10 * time.Second
+	if p.spec.Sink.Batch != nil && p.spec.Sink.Batch.Interval != "" {
+		if d, err := time.ParseDuration(p.spec.Sink.Batch.Interval); err == nil {
+			flushInterval = d
+		}
+	}
+
+	p.wg.Add(1)
+	go func() {
+		defer p.wg.Done()
+		p.eventLoop(ctx, eventCh, batchSize, flushInterval)
+	}()
+
+	return nil
+}
+
+// eventLoop is the core processing loop.
+func (p *Pipeline) eventLoop(ctx context.Context, eventCh <-chan *Event, batchSize int, flushInterval time.Duration) {
+	batch := make([]*Event, 0, batchSize)
+	ticker := time.NewTicker(flushInterval)
+	defer ticker.Stop()
+
+	flush := func() {
+		if len(batch) == 0 {
+			return
+		}
+		for _, sink := range p.sinks {
+			if err := sink.Write(ctx, batch); err != nil {
+				p.errors.Add(1)
+				p.handleError(ctx, err, batch)
+				continue
+			}
+		}
+		p.eventsOut.Add(int64(len(batch)))
+		batch = batch[:0]
+	}
+
+	for {
+		select {
+		case <-ctx.Done():
+			flush()
+			return
+
+		case event, ok := <-eventCh:
+			if !ok {
+				flush()
+				return
+			}
+
+			p.eventsIn.Add(1)
+			p.lastEvent.Store(time.Now())
+
+			// Apply transform chain
+			result, err := p.chain.Apply(event.Value)
+			if err != nil {
+				p.errors.Add(1)
+				p.handleTransformError(ctx, err, event)
+				continue
+			}
+
+			// Transform might filter out the event
+			if result == nil {
+				continue
+			}
+
+			event.Value = result
+			batch = append(batch, event)
+
+			if len(batch) >= batchSize {
+				flush()
+			}
+
+		case <-ticker.C:
+			flush()
+		}
+	}
+}
+
+// Stop gracefully stops the pipeline.
+func (p *Pipeline) Stop() error {
+	if p.cancel != nil {
+		p.cancel()
+	}
+	p.wg.Wait()
+
+	// Flush and close sinks
+	ctx := context.Background()
+	for _, s := range p.sinks {
+		_ = s.Flush(ctx)
+		_ = s.Close()
+	}
+
+	_ = p.source.Close()
+	p.state.Store(v1.StateStopped)
+	return nil
+}
+
+// Status returns the current pipeline status.
+func (p *Pipeline) Status() v1.PipelineStatus {
+	state, _ := p.state.Load().(v1.PipelineState)
+	lastEvt, _ := p.lastEvent.Load().(time.Time)
+
+	elapsed := time.Since(p.startedAt).Seconds()
+	eventsIn := p.eventsIn.Load()
+	var eps float64
+	if elapsed > 0 {
+		eps = float64(eventsIn) / elapsed
+	}
+
+	status := v1.PipelineStatus{
+		Name:      p.spec.Name,
+		State:     state,
+		EventsIn:  eventsIn,
+		EventsOut: p.eventsOut.Load(),
+		Errors:    p.errors.Load(),
+		Throughput: v1.ThroughputInfo{
+			EventsPerSec: eps,
+		},
+		Source: v1.SourceStatus{
+			Connected: state == v1.StateRunning,
+			Lag:       p.source.Lag(),
+		},
+	}
+
+	if !lastEvt.IsZero() {
+		status.LastEvent = &lastEvt
+	}
+	if !p.startedAt.IsZero() {
+		status.StartedAt = &p.startedAt
+	}
+
+	return status
+}
+
+// handleError handles sink write errors with retry/DLQ logic.
+func (p *Pipeline) handleError(ctx context.Context, err error, batch []*Event) {
+	maxRetries := p.spec.Isolation.MaxRetries
+	if maxRetries == 0 {
+		maxRetries = 3
+	}
+
+	backoff := time.Duration(p.spec.Isolation.BackoffMs) * time.Millisecond
+	if backoff == 0 {
+		backoff = time.Second
+	}
+
+	for attempt := 1; attempt <= maxRetries; attempt++ {
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(backoff * time.Duration(attempt)):
+		}
+
+		allOk := true
+		for _, sink := range p.sinks {
+			if writeErr := sink.Write(ctx, batch); writeErr != nil {
+				allOk = false
+			}
+		}
+		if allOk {
+			return
+		}
+	}
+
+	// All retries exhausted — write to DLQ if enabled
+	if p.spec.Isolation.DLQEnabled && p.dlq != nil {
+		if dlqErr := p.dlq.Write(ctx, batch); dlqErr != nil {
+			// DLQ write also failed — degrade pipeline
+			p.state.Store(v1.StateDegraded)
+			return
+		}
+		p.dlqCount.Add(int64(len(batch)))
+		return
+	}
+
+	p.state.Store(v1.StateDegraded)
+}
+
+// handleTransformError handles transform failures.
+func (p *Pipeline) handleTransformError(ctx context.Context, err error, event *Event) {
+	schemaSpec := p.spec.Schema
+	if schemaSpec != nil {
+		switch schemaSpec.OnFailure {
+		case "reject":
+			return // drop the event
+		case "dlq":
+			if p.dlq != nil {
+				if dlqErr := p.dlq.Write(ctx, []*Event{event}); dlqErr == nil {
+					p.dlqCount.Add(1)
+				}
+			}
+			return
+		}
+	}
+	// Default: log and continue
+}
