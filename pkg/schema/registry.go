@@ -1,8 +1,8 @@
 // Package schema implements Schema Registry validation for Mako pipelines.
 //
-// Supports Confluent Schema Registry HTTP API for JSON Schema validation
-// at runtime. Events that fail validation are routed based on the
-// pipeline's onFailure policy (reject, dlq, log).
+// Supports Confluent Schema Registry HTTP API for JSON Schema and Avro
+// validation at runtime. Events that fail validation are routed based on
+// the pipeline's onFailure policy (reject, dlq, log).
 package schema
 
 import (
@@ -15,6 +15,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/hamba/avro/v2"
 )
 
 // Validator validates events against schemas from a Schema Registry.
@@ -29,6 +31,11 @@ type Validator struct {
 	schema     *SchemaInfo
 	schemaErr  error
 	mu         sync.RWMutex
+
+	// Parsed Avro schema (cached after first parse)
+	avroSchema avro.Schema
+	avroOnce   sync.Once
+	avroErr    error
 }
 
 // SchemaInfo represents a schema fetched from the registry.
@@ -97,12 +104,13 @@ func (v *Validator) Validate(ctx context.Context, event map[string]any) (*Valida
 	switch schema.SchemaType {
 	case "JSON", "":
 		v.validateJSON(event, schema, result)
+	case "AVRO":
+		v.validateAvro(event, schema, result)
 	default:
-		// For AVRO/PROTOBUF, validate that the event can be serialized
-		// Full AVRO/PROTOBUF validation would require dedicated libraries
+		// For PROTOBUF and others, pass through with a warning
 		result.Valid = true
 		result.Errors = append(result.Errors,
-			fmt.Sprintf("schema type %s: structural validation only", schema.SchemaType))
+			fmt.Sprintf("schema type %s: structural validation not yet supported", schema.SchemaType))
 	}
 
 	return result, nil
@@ -177,6 +185,116 @@ func (v *Validator) validateJSON(event map[string]any, schema *SchemaInfo, resul
 	}
 }
 
+// validateAvro validates an event against an Avro schema.
+// It parses the Avro schema from the Registry (cached after first parse),
+// then attempts to marshal the event map to Avro binary format.
+// If the event doesn't conform to the schema (wrong types, missing required
+// fields, unknown enums, etc.), Marshal returns an error.
+func (v *Validator) validateAvro(event map[string]any, schema *SchemaInfo, result *ValidationResult) {
+	result.Valid = true
+
+	// Parse the Avro schema (cached)
+	parsedSchema, err := v.getAvroSchema(schema.Schema)
+	if err != nil {
+		result.Valid = false
+		result.Errors = append(result.Errors, fmt.Sprintf("invalid avro schema: %v", err))
+		return
+	}
+
+	// Coerce numeric types to match Avro expectations.
+	// JSON unmarshals numbers as float64, but Avro expects int/long for integer fields.
+	coerced := coerceForAvro(event, parsedSchema)
+
+	// Marshal the event map to Avro binary. This validates that every field
+	// matches the declared Avro type (string, int, long, float, double,
+	// boolean, enum, nested records, arrays, maps, unions, etc.).
+	_, err = avro.Marshal(parsedSchema, coerced)
+	if err != nil {
+		result.Valid = false
+		result.Errors = append(result.Errors, fmt.Sprintf("avro validation: %v", err))
+		return
+	}
+}
+
+// coerceForAvro converts JSON-decoded values (float64 for all numbers) to the
+// types expected by hamba/avro (int for "int", int64 for "long", float32 for
+// "float", etc.). Without this, avro.Marshal would reject valid integer values
+// because JSON always decodes them as float64.
+func coerceForAvro(event map[string]any, schema avro.Schema) map[string]any {
+	rec, ok := schema.(*avro.RecordSchema)
+	if !ok {
+		return event
+	}
+
+	result := make(map[string]any, len(event))
+	for k, v := range event {
+		result[k] = v
+	}
+
+	for _, field := range rec.Fields() {
+		val, exists := result[field.Name()]
+		if !exists {
+			continue
+		}
+		result[field.Name()] = coerceValue(val, field.Type())
+	}
+
+	return result
+}
+
+// coerceValue converts a single value to match the target Avro type.
+func coerceValue(val any, schema avro.Schema) any {
+	switch s := schema.(type) {
+	case *avro.PrimitiveSchema:
+		f, ok := val.(float64)
+		if !ok {
+			return val
+		}
+		switch s.Type() {
+		case avro.Int:
+			return int(f)
+		case avro.Long:
+			return int64(f)
+		case avro.Float:
+			return float32(f)
+		case avro.Double:
+			return f // already float64
+		}
+	case *avro.UnionSchema:
+		// For unions like ["null", "string"], try each non-null type
+		if val == nil {
+			return nil
+		}
+		for _, t := range s.Types() {
+			if _, ok := t.(*avro.NullSchema); ok {
+				continue
+			}
+			return coerceValue(val, t)
+		}
+	case *avro.RecordSchema:
+		if m, ok := val.(map[string]any); ok {
+			return coerceForAvro(m, s)
+		}
+	case *avro.ArraySchema:
+		if arr, ok := val.([]any); ok {
+			coerced := make([]any, len(arr))
+			for i, item := range arr {
+				coerced[i] = coerceValue(item, s.Items())
+			}
+			return coerced
+		}
+	}
+	return val
+}
+
+// getAvroSchema parses and caches the Avro schema string.
+func (v *Validator) getAvroSchema(schemaStr string) (avro.Schema, error) {
+	v.avroOnce.Do(func() {
+		v.avroSchema, v.avroErr = avro.Parse(schemaStr)
+	})
+	return v.avroSchema, v.avroErr
+}
+
 // checkType validates a Go value against a JSON Schema type.
 func checkType(val any, expectedType string) bool {
 	if val == nil {
@@ -230,6 +348,10 @@ func (v *Validator) RefreshSchema() {
 	v.schemaOnce = sync.Once{}
 	v.schema = nil
 	v.schemaErr = nil
+	// Also reset the cached Avro schema
+	v.avroOnce = sync.Once{}
+	v.avroSchema = nil
+	v.avroErr = nil
 }
 
 // fetchLatestSchema retrieves the latest schema version from the registry.
