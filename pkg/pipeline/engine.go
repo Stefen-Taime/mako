@@ -150,14 +150,16 @@ func (p *Pipeline) eventLoop(ctx context.Context, eventCh <-chan *Event, batchSi
 	ticker := time.NewTicker(flushInterval)
 	defer ticker.Stop()
 
-	flush := func() {
+	// flush writes the current batch to all sinks.
+	// Uses the provided writeCtx (which may differ from the loop ctx during shutdown).
+	flush := func(writeCtx context.Context) {
 		if len(batch) == 0 {
 			return
 		}
 		for _, sink := range p.sinks {
-			if err := sink.Write(ctx, batch); err != nil {
+			if err := sink.Write(writeCtx, batch); err != nil {
 				p.errors.Add(1)
-				p.handleError(ctx, err, batch)
+				p.handleError(writeCtx, err, batch)
 				continue
 			}
 		}
@@ -168,12 +170,17 @@ func (p *Pipeline) eventLoop(ctx context.Context, eventCh <-chan *Event, batchSi
 	for {
 		select {
 		case <-ctx.Done():
-			flush()
+			// Use a fresh context for the final flush so sinks can complete their writes
+			drainCtx, drainCancel := context.WithTimeout(context.Background(), 30*time.Second)
+			flush(drainCtx)
+			drainCancel()
 			return
 
 		case event, ok := <-eventCh:
 			if !ok {
-				flush()
+				drainCtx, drainCancel := context.WithTimeout(context.Background(), 30*time.Second)
+				flush(drainCtx)
+				drainCancel()
 				return
 			}
 
@@ -213,11 +220,11 @@ func (p *Pipeline) eventLoop(ctx context.Context, eventCh <-chan *Event, batchSi
 			batch = append(batch, event)
 
 			if len(batch) >= batchSize {
-				flush()
+				flush(ctx)
 			}
 
 		case <-ticker.C:
-			flush()
+			flush(ctx)
 		}
 	}
 }
