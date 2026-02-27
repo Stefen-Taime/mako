@@ -1,15 +1,18 @@
 package main
 
 import (
+	"encoding/csv"
 	"encoding/json"
 	"fmt"
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Stefen-Taime/mako/api/v1"
 	"github.com/Stefen-Taime/mako/pkg/codegen"
 	"github.com/Stefen-Taime/mako/pkg/config"
+	"github.com/Stefen-Taime/mako/pkg/pipeline"
 	"github.com/Stefen-Taime/mako/pkg/sink"
 	"github.com/Stefen-Taime/mako/pkg/transform"
 )
@@ -1131,6 +1134,393 @@ func TestChColumnTypeMixedEvent(t *testing.T) {
 		if got != expectedType {
 			t.Errorf("field %q: ChColumnType(%v) = %q, want %q",
 				field, event[field], got, expectedType)
+		}
+	}
+}
+
+// ═══════════════════════════════════════════
+// Parquet Encoder Tests
+// ═══════════════════════════════════════════
+
+func makeTestEvents() []*pipeline.Event {
+	ts := time.Date(2024, 6, 15, 10, 30, 0, 0, time.UTC)
+	return []*pipeline.Event{
+		{
+			Key:       []byte("key1"),
+			Value:     map[string]any{"user_id": "u1", "amount": 99.5, "active": true, "address": map[string]any{"city": "Paris"}},
+			Timestamp: ts,
+			Topic:     "events.orders",
+			Partition: 0,
+			Offset:    100,
+		},
+		{
+			Key:       []byte("key2"),
+			Value:     map[string]any{"user_id": "u2", "amount": 42.0, "active": false, "tags": []any{"vip"}},
+			Timestamp: ts,
+			Topic:     "events.orders",
+			Partition: 0,
+			Offset:    101,
+		},
+	}
+}
+
+func TestEncodeParquetBasic(t *testing.T) {
+	events := makeTestEvents()
+	data, err := sink.EncodeParquet(events, "snappy")
+	if err != nil {
+		t.Fatalf("EncodeParquet failed: %v", err)
+	}
+	if len(data) == 0 {
+		t.Fatal("EncodeParquet returned empty bytes")
+	}
+	// Parquet magic bytes: PAR1
+	if string(data[:4]) != "PAR1" {
+		t.Errorf("expected Parquet magic bytes PAR1, got %q", string(data[:4]))
+	}
+	// File should also end with PAR1
+	if string(data[len(data)-4:]) != "PAR1" {
+		t.Errorf("expected Parquet footer magic PAR1, got %q", string(data[len(data)-4:]))
+	}
+	t.Logf("Parquet output: %d bytes for %d events", len(data), len(events))
+}
+
+func TestEncodeParquetTypes(t *testing.T) {
+	ts := time.Date(2024, 1, 15, 10, 0, 0, 0, time.UTC)
+	events := []*pipeline.Event{
+		{
+			Value: map[string]any{
+				"name":    "Alice",
+				"score":   float64(95.5),
+				"active":  true,
+				"address": map[string]any{"city": "NYC"},
+				"tags":    []any{"admin", "user"},
+			},
+			Timestamp: ts,
+			Topic:     "test",
+			Offset:    1,
+		},
+	}
+	data, err := sink.EncodeParquet(events, "snappy")
+	if err != nil {
+		t.Fatalf("EncodeParquet failed: %v", err)
+	}
+	if len(data) < 12 {
+		t.Fatal("Parquet output too small")
+	}
+	// Verify magic bytes
+	if string(data[:4]) != "PAR1" {
+		t.Error("missing PAR1 header")
+	}
+}
+
+func TestEncodeParquetCompression(t *testing.T) {
+	events := makeTestEvents()
+
+	compressions := []string{"snappy", "zstd", "gzip", "none"}
+	for _, comp := range compressions {
+		t.Run(comp, func(t *testing.T) {
+			data, err := sink.EncodeParquet(events, comp)
+			if err != nil {
+				t.Fatalf("EncodeParquet(%s) failed: %v", comp, err)
+			}
+			if len(data) == 0 {
+				t.Fatalf("EncodeParquet(%s) returned empty", comp)
+			}
+			if string(data[:4]) != "PAR1" {
+				t.Errorf("EncodeParquet(%s) missing PAR1 magic", comp)
+			}
+		})
+	}
+}
+
+func TestEncodeParquetEmpty(t *testing.T) {
+	data, err := sink.EncodeParquet(nil, "snappy")
+	if err != nil {
+		t.Fatalf("EncodeParquet(nil) should not error: %v", err)
+	}
+	if data != nil {
+		t.Errorf("EncodeParquet(nil) should return nil, got %d bytes", len(data))
+	}
+
+	data, err = sink.EncodeParquet([]*pipeline.Event{}, "snappy")
+	if err != nil {
+		t.Fatalf("EncodeParquet([]) should not error: %v", err)
+	}
+	if data != nil {
+		t.Errorf("EncodeParquet([]) should return nil, got %d bytes", len(data))
+	}
+}
+
+func TestS3SinkParquetFormat(t *testing.T) {
+	cfg := map[string]any{"region": "us-east-1", "compression": "snappy"}
+	s := sink.NewS3Sink("my-bucket", "raw/events", "parquet", cfg)
+	if s == nil {
+		t.Fatal("NewS3Sink returned nil")
+	}
+	if s.Name() != "s3:my-bucket/raw/events" {
+		t.Errorf("unexpected name: %s", s.Name())
+	}
+	if s.Format() != "parquet" {
+		t.Errorf("expected format parquet, got %s", s.Format())
+	}
+}
+
+func TestGCSSinkParquetFormat(t *testing.T) {
+	cfg := map[string]any{"project": "my-project", "compression": "zstd"}
+	s := sink.NewGCSSink("my-bucket", "raw/events", "parquet", cfg)
+	if s == nil {
+		t.Fatal("NewGCSSink returned nil")
+	}
+	if s.Name() != "gcs:my-bucket/raw/events" {
+		t.Errorf("unexpected name: %s", s.Name())
+	}
+	if s.Format() != "parquet" {
+		t.Errorf("expected format parquet, got %s", s.Format())
+	}
+}
+
+// ═══════════════════════════════════════════
+// CSV Encoder Tests
+// ═══════════════════════════════════════════
+
+func TestEncodeCSVBasic(t *testing.T) {
+	events := makeTestEvents()
+	data, err := sink.EncodeCSV(events, ',')
+	if err != nil {
+		t.Fatalf("EncodeCSV failed: %v", err)
+	}
+	if len(data) == 0 {
+		t.Fatal("EncodeCSV returned empty bytes")
+	}
+
+	// Parse CSV output
+	r := csv.NewReader(strings.NewReader(string(data)))
+	records, err := r.ReadAll()
+	if err != nil {
+		t.Fatalf("parse CSV output: %v", err)
+	}
+
+	// Should have header + 2 data rows
+	if len(records) != 3 {
+		t.Errorf("expected 3 rows (header + 2 data), got %d", len(records))
+	}
+
+	// Header should be sorted
+	header := records[0]
+	for i := 1; i < len(header); i++ {
+		if header[i] < header[i-1] {
+			t.Errorf("header not sorted: %v", header)
+			break
+		}
+	}
+
+	t.Logf("CSV output: %d bytes, %d columns, %d rows", len(data), len(header), len(records)-1)
+}
+
+func TestEncodeCSVAllKeys(t *testing.T) {
+	// Events with different key sets — CSV should have union of all keys.
+	ts := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+	events := []*pipeline.Event{
+		{Value: map[string]any{"a": "1", "b": "2"}, Timestamp: ts, Topic: "t", Offset: 1},
+		{Value: map[string]any{"b": "3", "c": "4"}, Timestamp: ts, Topic: "t", Offset: 2},
+	}
+	data, err := sink.EncodeCSV(events, ',')
+	if err != nil {
+		t.Fatalf("EncodeCSV failed: %v", err)
+	}
+
+	r := csv.NewReader(strings.NewReader(string(data)))
+	records, err := r.ReadAll()
+	if err != nil {
+		t.Fatalf("parse CSV: %v", err)
+	}
+
+	header := records[0]
+	// Should contain a, b, c plus metadata columns (_offset, _topic, _ts)
+	colSet := make(map[string]bool)
+	for _, h := range header {
+		colSet[h] = true
+	}
+	for _, expected := range []string{"a", "b", "c", "_offset", "_topic", "_ts"} {
+		if !colSet[expected] {
+			t.Errorf("missing expected column %q in header %v", expected, header)
+		}
+	}
+}
+
+func TestEncodeCSVNested(t *testing.T) {
+	ts := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+	events := []*pipeline.Event{
+		{
+			Value:     map[string]any{"name": "Alice", "addr": map[string]any{"city": "NYC", "zip": "10001"}},
+			Timestamp: ts,
+			Topic:     "t",
+			Offset:    1,
+		},
+	}
+	data, err := sink.EncodeCSV(events, ',')
+	if err != nil {
+		t.Fatalf("EncodeCSV failed: %v", err)
+	}
+
+	r := csv.NewReader(strings.NewReader(string(data)))
+	records, err := r.ReadAll()
+	if err != nil {
+		t.Fatalf("parse CSV: %v", err)
+	}
+
+	// Find the addr column
+	header := records[0]
+	addrIdx := -1
+	for i, h := range header {
+		if h == "addr" {
+			addrIdx = i
+			break
+		}
+	}
+	if addrIdx == -1 {
+		t.Fatal("addr column not found in header")
+	}
+
+	// addr value should be JSON-serialized
+	addrVal := records[1][addrIdx]
+	var parsed map[string]any
+	if err := json.Unmarshal([]byte(addrVal), &parsed); err != nil {
+		t.Errorf("addr value should be valid JSON, got %q: %v", addrVal, err)
+	}
+	if parsed["city"] != "NYC" {
+		t.Errorf("expected city=NYC, got %v", parsed["city"])
+	}
+}
+
+func TestEncodeCSVDelimiter(t *testing.T) {
+	events := makeTestEvents()
+
+	cases := []struct {
+		name  string
+		delim rune
+	}{
+		{"tab", '\t'},
+		{"semicolon", ';'},
+		{"pipe", '|'},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			data, err := sink.EncodeCSV(events, tc.delim)
+			if err != nil {
+				t.Fatalf("EncodeCSV(%s) failed: %v", tc.name, err)
+			}
+			if len(data) == 0 {
+				t.Fatal("empty output")
+			}
+
+			r := csv.NewReader(strings.NewReader(string(data)))
+			r.Comma = tc.delim
+			records, err := r.ReadAll()
+			if err != nil {
+				t.Fatalf("parse CSV with delimiter %q: %v", tc.delim, err)
+			}
+			if len(records) != 3 {
+				t.Errorf("expected 3 rows, got %d", len(records))
+			}
+		})
+	}
+}
+
+func TestEncodeCSVEmpty(t *testing.T) {
+	data, err := sink.EncodeCSV(nil, ',')
+	if err != nil {
+		t.Fatalf("EncodeCSV(nil) should not error: %v", err)
+	}
+	if data != nil {
+		t.Errorf("EncodeCSV(nil) should return nil, got %d bytes", len(data))
+	}
+
+	data, err = sink.EncodeCSV([]*pipeline.Event{}, ',')
+	if err != nil {
+		t.Fatalf("EncodeCSV([]) should not error: %v", err)
+	}
+	if data != nil {
+		t.Errorf("EncodeCSV([]) should return nil, got %d bytes", len(data))
+	}
+}
+
+func TestS3SinkCSVFormat(t *testing.T) {
+	cfg := map[string]any{"region": "us-east-1", "csv_delimiter": ";"}
+	s := sink.NewS3Sink("my-bucket", "raw/exports", "csv", cfg)
+	if s == nil {
+		t.Fatal("NewS3Sink returned nil")
+	}
+	if s.Format() != "csv" {
+		t.Errorf("expected format csv, got %s", s.Format())
+	}
+}
+
+func TestGCSSinkCSVFormat(t *testing.T) {
+	cfg := map[string]any{"project": "my-project", "csv_delimiter": "\\t"}
+	s := sink.NewGCSSink("my-bucket", "raw/exports", "csv", cfg)
+	if s == nil {
+		t.Fatal("NewGCSSink returned nil")
+	}
+	if s.Format() != "csv" {
+		t.Errorf("expected format csv, got %s", s.Format())
+	}
+}
+
+// ═══════════════════════════════════════════
+// Format helpers tests
+// ═══════════════════════════════════════════
+
+func TestFormatExtension(t *testing.T) {
+	cases := map[string]string{
+		"json":    "json",
+		"jsonl":   "jsonl",
+		"parquet": "parquet",
+		"csv":     "csv",
+		"":        "jsonl",
+		"unknown": "jsonl",
+	}
+	for input, expected := range cases {
+		got := sink.FormatExtension(input)
+		if got != expected {
+			t.Errorf("FormatExtension(%q) = %q, want %q", input, got, expected)
+		}
+	}
+}
+
+func TestFormatContentType(t *testing.T) {
+	cases := map[string]string{
+		"json":    "application/json",
+		"jsonl":   "application/x-ndjson",
+		"parquet": "application/octet-stream",
+		"csv":     "text/csv",
+		"":        "application/x-ndjson",
+	}
+	for input, expected := range cases {
+		got := sink.FormatContentType(input)
+		if got != expected {
+			t.Errorf("FormatContentType(%q) = %q, want %q", input, got, expected)
+		}
+	}
+}
+
+func TestParseCSVDelimiter(t *testing.T) {
+	cases := []struct {
+		input    string
+		expected rune
+	}{
+		{",", ','},
+		{"", ','},
+		{";", ';'},
+		{"|", '|'},
+		{"\\t", '\t'},
+		{"tab", '\t'},
+	}
+	for _, tc := range cases {
+		got := sink.ParseCSVDelimiter(tc.input)
+		if got != tc.expected {
+			t.Errorf("ParseCSVDelimiter(%q) = %q, want %q", tc.input, got, tc.expected)
 		}
 	}
 }

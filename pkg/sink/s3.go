@@ -20,7 +20,7 @@ import (
 // S3 Sink (AWS SDK v2)
 // ═══════════════════════════════════════════
 
-// S3Sink writes events to Amazon S3 as JSON/JSONL files.
+// S3Sink writes events to Amazon S3 as JSON/JSONL/Parquet/CSV files.
 // Events are buffered and flushed as objects partitioned by time.
 //
 // YAML example:
@@ -29,16 +29,18 @@ import (
 //	  type: s3
 //	  bucket: my-data-lake
 //	  prefix: raw/events
-//	  format: jsonl
+//	  format: parquet         # jsonl|json|parquet|csv
 //	  config:
 //	    region: us-east-1
+//	    compression: snappy   # parquet only: snappy|zstd|gzip|none
+//	    csv_delimiter: ","    # csv only: "," | ";" | "\t" | "tab" | "|"
 //	    # Optional: override credentials (defaults to AWS SDK chain)
 //	    access_key_id: AKIA...
 //	    secret_access_key: ...
 type S3Sink struct {
 	bucket string
 	prefix string
-	format string // "jsonl" (default) or "json"
+	format string // "jsonl" (default), "json", "parquet", "csv"
 	region string
 	cfg    map[string]any
 
@@ -128,10 +130,7 @@ func (s *S3Sink) Flush(ctx context.Context) error {
 		return fmt.Errorf("s3 encode: %w", err)
 	}
 
-	contentType := "application/x-ndjson"
-	if s.format == "json" {
-		contentType = "application/json"
-	}
+	contentType := FormatContentType(s.format)
 
 	_, err = s.client.PutObject(ctx, &s3.PutObjectInput{
 		Bucket:      aws.String(s.bucket),
@@ -162,6 +161,11 @@ func (s *S3Sink) Name() string {
 	return fmt.Sprintf("s3:%s/%s", s.bucket, s.prefix)
 }
 
+// Format returns the configured output format.
+func (s *S3Sink) Format() string {
+	return s.format
+}
+
 // ── helpers ──
 
 func (s *S3Sink) objectKey(t time.Time, count int) string {
@@ -172,17 +176,22 @@ func (s *S3Sink) objectKey(t time.Time, count int) string {
 	partition := fmt.Sprintf("year=%04d/month=%02d/day=%02d/hour=%02d",
 		t.Year(), t.Month(), t.Day(), t.Hour())
 	ts := t.Format("20060102T150405Z")
-	ext := s.format
-	if ext == "jsonl" {
-		ext = "jsonl"
-	}
+	ext := FormatExtension(s.format)
 	return fmt.Sprintf("%s%s/%s_%d.%s", prefix, partition, ts, count, ext)
 }
 
 func (s *S3Sink) encode(events []*pipeline.Event) ([]byte, error) {
-	var buf bytes.Buffer
+	switch s.format {
+	case "parquet":
+		compression := envOrConfig(s.cfg, "compression", "", "snappy")
+		return EncodeParquet(events, compression)
 
-	if s.format == "json" {
+	case "csv":
+		delimStr := envOrConfig(s.cfg, "csv_delimiter", "", ",")
+		delimiter := ParseCSVDelimiter(delimStr)
+		return EncodeCSV(events, delimiter)
+
+	case "json":
 		// JSON array
 		records := make([]map[string]any, 0, len(events))
 		for _, e := range events {
@@ -194,17 +203,19 @@ func (s *S3Sink) encode(events []*pipeline.Event) ([]byte, error) {
 			return nil, err
 		}
 		return data, nil
-	}
 
-	// Default: JSONL (one JSON object per line)
-	enc := json.NewEncoder(&buf)
-	for _, e := range events {
-		rec := buildRecord(e)
-		if err := enc.Encode(rec); err != nil {
-			return nil, err
+	default:
+		// Default: JSONL (one JSON object per line)
+		var buf bytes.Buffer
+		enc := json.NewEncoder(&buf)
+		for _, e := range events {
+			rec := buildRecord(e)
+			if err := enc.Encode(rec); err != nil {
+				return nil, err
+			}
 		}
+		return buf.Bytes(), nil
 	}
-	return buf.Bytes(), nil
 }
 
 // buildRecord creates the output record for an event, including metadata.

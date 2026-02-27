@@ -16,7 +16,7 @@ import (
 // GCS Sink (cloud.google.com/go/storage)
 // ═══════════════════════════════════════════
 
-// GCSSink writes events to Google Cloud Storage as JSON/JSONL files.
+// GCSSink writes events to Google Cloud Storage as JSON/JSONL/Parquet/CSV files.
 // Authentication uses Application Default Credentials (ADC).
 // Set GOOGLE_APPLICATION_CREDENTIALS or use `gcloud auth application-default login`.
 //
@@ -26,13 +26,15 @@ import (
 //	  type: gcs
 //	  bucket: my-data-lake
 //	  prefix: raw/events
-//	  format: jsonl
+//	  format: parquet           # jsonl|json|parquet|csv
 //	  config:
 //	    project: my-gcp-project
+//	    compression: zstd       # parquet only: snappy|zstd|gzip|none
+//	    csv_delimiter: ";"      # csv only: "," | ";" | "\t" | "tab" | "|"
 type GCSSink struct {
 	bucket  string
 	prefix  string
-	format  string // "jsonl" (default) or "json"
+	format  string // "jsonl" (default), "json", "parquet", "csv"
 	project string
 	cfg     map[string]any
 
@@ -100,11 +102,7 @@ func (s *GCSSink) Flush(ctx context.Context) error {
 	obj := bkt.Object(objectName)
 	w := obj.NewWriter(ctx)
 
-	if s.format == "json" {
-		w.ContentType = "application/json"
-	} else {
-		w.ContentType = "application/x-ndjson"
-	}
+	w.ContentType = FormatContentType(s.format)
 
 	if _, err := w.Write(body); err != nil {
 		_ = w.Close()
@@ -145,6 +143,11 @@ func (s *GCSSink) Name() string {
 	return fmt.Sprintf("gcs:%s/%s", s.bucket, s.prefix)
 }
 
+// Format returns the configured output format.
+func (s *GCSSink) Format() string {
+	return s.format
+}
+
 // ── helpers ──
 
 func (s *GCSSink) objectName(t time.Time, count int) string {
@@ -155,14 +158,22 @@ func (s *GCSSink) objectName(t time.Time, count int) string {
 	partition := fmt.Sprintf("year=%04d/month=%02d/day=%02d/hour=%02d",
 		t.Year(), t.Month(), t.Day(), t.Hour())
 	ts := t.Format("20060102T150405Z")
-	ext := s.format
+	ext := FormatExtension(s.format)
 	return fmt.Sprintf("%s%s/%s_%d.%s", prefix, partition, ts, count, ext)
 }
 
 func (s *GCSSink) encode(events []*pipeline.Event) ([]byte, error) {
-	var buf bytes.Buffer
+	switch s.format {
+	case "parquet":
+		compression := envOrConfig(s.cfg, "compression", "", "snappy")
+		return EncodeParquet(events, compression)
 
-	if s.format == "json" {
+	case "csv":
+		delimStr := envOrConfig(s.cfg, "csv_delimiter", "", ",")
+		delimiter := ParseCSVDelimiter(delimStr)
+		return EncodeCSV(events, delimiter)
+
+	case "json":
 		records := make([]map[string]any, 0, len(events))
 		for _, e := range events {
 			rec := buildRecord(e)
@@ -173,15 +184,17 @@ func (s *GCSSink) encode(events []*pipeline.Event) ([]byte, error) {
 			return nil, err
 		}
 		return data, nil
-	}
 
-	// Default: JSONL
-	enc := json.NewEncoder(&buf)
-	for _, e := range events {
-		rec := buildRecord(e)
-		if err := enc.Encode(rec); err != nil {
-			return nil, err
+	default:
+		// Default: JSONL
+		var buf bytes.Buffer
+		enc := json.NewEncoder(&buf)
+		for _, e := range events {
+			rec := buildRecord(e)
+			if err := enc.Encode(rec); err != nil {
+				return nil, err
+			}
 		}
+		return buf.Bytes(), nil
 	}
-	return buf.Bytes(), nil
 }

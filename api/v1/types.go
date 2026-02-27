@@ -158,7 +158,7 @@ type Sink struct {
 	// Object storage
 	Bucket string `yaml:"bucket,omitempty" json:"bucket,omitempty"`
 	Prefix string `yaml:"prefix,omitempty" json:"prefix,omitempty"`
-	Format string `yaml:"format,omitempty" json:"format,omitempty"` // parquet|json|avro
+	Format string `yaml:"format,omitempty" json:"format,omitempty"` // parquet|csv|json|jsonl
 
 	// Batching
 	Batch *BatchSpec `yaml:"batch,omitempty" json:"batch,omitempty"`
