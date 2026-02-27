@@ -63,8 +63,9 @@ type HTTPSource struct {
 	apiKeyValue   string
 	oauth2URL     string
 	oauth2ID      string
-	oauth2Secret  string
-	oauth2Token   string // cached OAuth2 token
+	oauth2Secret      string
+	oauth2ContentType string // "form" (default, RFC 6749) or "json"
+	oauth2Token       string // cached OAuth2 token
 	oauth2Expiry  time.Time
 
 	// Response parsing
@@ -130,6 +131,7 @@ func NewHTTPSource(cfg map[string]any) *HTTPSource {
 	oauth2URL := strFromConfig(cfg, "oauth2_token_url", "")
 	oauth2ID := sink.Resolve(cfg, "oauth2_client_id", "OAUTH_CLIENT_ID", "")
 	oauth2Secret := sink.Resolve(cfg, "oauth2_client_secret", "OAUTH_CLIENT_SECRET", "")
+	oauth2ContentType := strFromConfig(cfg, "oauth2_content_type", "form")
 
 	// Response parsing
 	responseType := strFromConfig(cfg, "response_type", "json")
@@ -181,6 +183,7 @@ func NewHTTPSource(cfg map[string]any) *HTTPSource {
 		oauth2URL:             oauth2URL,
 		oauth2ID:              oauth2ID,
 		oauth2Secret:          oauth2Secret,
+		oauth2ContentType:     oauth2ContentType,
 		responseType:          responseType,
 		dataPath:              dataPath,
 		paginationType:        paginationType,
@@ -677,17 +680,35 @@ func (s *HTTPSource) getOAuth2Token(ctx context.Context) (string, error) {
 	}
 
 	// Fetch new token using client credentials grant
-	data := url.Values{
-		"grant_type":    {"client_credentials"},
-		"client_id":     {s.oauth2ID},
-		"client_secret": {s.oauth2Secret},
+	var bodyReader io.Reader
+	var contentType string
+
+	if s.oauth2ContentType == "json" {
+		payload, err := json.Marshal(map[string]string{
+			"grant_type":    "client_credentials",
+			"client_id":     s.oauth2ID,
+			"client_secret": s.oauth2Secret,
+		})
+		if err != nil {
+			return "", fmt.Errorf("marshal oauth2 json body: %w", err)
+		}
+		bodyReader = bytes.NewReader(payload)
+		contentType = "application/json"
+	} else {
+		data := url.Values{
+			"grant_type":    {"client_credentials"},
+			"client_id":     {s.oauth2ID},
+			"client_secret": {s.oauth2Secret},
+		}
+		bodyReader = strings.NewReader(data.Encode())
+		contentType = "application/x-www-form-urlencoded"
 	}
 
-	req, err := http.NewRequestWithContext(ctx, "POST", s.oauth2URL, strings.NewReader(data.Encode()))
+	req, err := http.NewRequestWithContext(ctx, "POST", s.oauth2URL, bodyReader)
 	if err != nil {
 		return "", err
 	}
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Content-Type", contentType)
 
 	resp, err := s.client.Do(req)
 	if err != nil {
