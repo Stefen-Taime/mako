@@ -30,6 +30,7 @@ pipeline:
     database: ANALYTICS
     schema: RAW
     table: USERS
+    flatten: true
     config:
       account: REPLACE_WITH_YOUR_ACCOUNT
       user: REPLACE_WITH_YOUR_USER

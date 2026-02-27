@@ -30,6 +30,7 @@ pipeline:
     database: ANALYTICS
     schema: RAW
     table: MOVIES
+    flatten: true
     config:
       account: REPLACE_WITH_YOUR_ACCOUNT
       user: REPLACE_WITH_YOUR_USER

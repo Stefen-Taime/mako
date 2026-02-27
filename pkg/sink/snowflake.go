@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -21,15 +22,19 @@ import (
 // ═══════════════════════════════════════════
 
 // SnowflakeSink writes events to Snowflake using the gosnowflake driver.
-// Events are stored as VARIANT (JSON) in the target table.
+//
+// When flatten is false (default), events are stored as VARIANT (JSON) in a
+// single event_data column. When flatten is true, each top-level key in the
+// event map becomes its own typed column (VARCHAR, FLOAT, BOOLEAN, or VARIANT
+// for nested structures). The table is auto-created on the first batch, and
+// new columns are added dynamically via ALTER TABLE when unseen keys appear.
 //
 // Connection is configured via:
 //   - config.dsn  (full DSN string)
 //   - SNOWFLAKE_DSN env var
 //   - Individual fields: account, user, password, warehouse, role
 //
-// Target table should have at minimum a VARIANT column for event data.
-// Recommended schema:
+// Default schema (flatten=false):
 //
 //	CREATE TABLE <db>.<schema>.<table> (
 //	    event_data    VARIANT NOT NULL,
@@ -43,14 +48,20 @@ type SnowflakeSink struct {
 	schema    string
 	table     string
 	warehouse string
+	flatten   bool
 	config    map[string]any
 	dsn       string
 	db        *sql.DB
 	mu        sync.Mutex
+
+	// flatten mode state
+	columns    []string        // ordered column names (set on first batch)
+	columnSet  map[string]bool // quick lookup for known columns
+	tableReady bool            // true once CREATE TABLE has been executed
 }
 
 // NewSnowflakeSink creates a Snowflake sink.
-func NewSnowflakeSink(database, schema, table string, config map[string]any) *SnowflakeSink {
+func NewSnowflakeSink(database, schema, table string, flatten bool, config map[string]any) *SnowflakeSink {
 	dsn := ""
 	warehouse := ""
 
@@ -104,8 +115,10 @@ func NewSnowflakeSink(database, schema, table string, config map[string]any) *Sn
 		schema:    schema,
 		table:     table,
 		warehouse: warehouse,
+		flatten:   flatten,
 		config:    config,
 		dsn:       dsn,
+		columnSet: make(map[string]bool),
 	}
 }
 
@@ -153,27 +166,32 @@ func (s *SnowflakeSink) Open(ctx context.Context) error {
 	// internal connection state and cause subsequent queries to fail
 	// with context deadline exceeded.
 
-	// Auto-create the target table if it does not exist.
-	qualifiedTable := fmt.Sprintf("%s.%s.%s", s.database, s.schema, s.table)
-	createDDL := fmt.Sprintf(`CREATE TABLE IF NOT EXISTS %s (
-		event_data    VARIANT NOT NULL,
-		event_key     VARCHAR,
-		event_topic   VARCHAR,
-		event_offset  NUMBER,
-		loaded_at     TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP()
-	)`, qualifiedTable)
-	if _, err := db.ExecContext(initCtx, createDDL); err != nil {
-		db.Close()
-		return fmt.Errorf("snowflake create table: %w", err)
+	// For non-flatten mode, create the VARIANT table immediately.
+	// For flatten mode, table creation is deferred to the first Write()
+	// because we need to inspect event keys to determine column types.
+	if !s.flatten {
+		qualifiedTable := fmt.Sprintf("%s.%s.%s", s.database, s.schema, s.table)
+		createDDL := fmt.Sprintf(`CREATE TABLE IF NOT EXISTS %s (
+			event_data    VARIANT NOT NULL,
+			event_key     VARCHAR,
+			event_topic   VARCHAR,
+			event_offset  NUMBER,
+			loaded_at     TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP()
+		)`, qualifiedTable)
+		if _, err := db.ExecContext(initCtx, createDDL); err != nil {
+			db.Close()
+			return fmt.Errorf("snowflake create table: %w", err)
+		}
+		s.tableReady = true
 	}
 
-	fmt.Fprintf(os.Stderr, "[snowflake] connected to %s.%s.%s\n", s.database, s.schema, s.table)
+	fmt.Fprintf(os.Stderr, "[snowflake] connected to %s.%s.%s (flatten=%v)\n",
+		s.database, s.schema, s.table, s.flatten)
 	s.db = db
 	return nil
 }
 
-// Write inserts events into Snowflake using batch INSERT with PARSE_JSON.
-// Snowflake uses ? as parameter placeholder (not $N like PostgreSQL).
+// Write inserts events into Snowflake.
 // Large batches are split into small chunks so each transaction stays well
 // within the driver timeout. If a chunk fails, the remaining chunks are
 // still attempted and a summary error is returned.
@@ -185,13 +203,21 @@ func (s *SnowflakeSink) Write(ctx context.Context, events []*pipeline.Event) err
 		return nil
 	}
 
+	// Flatten mode: ensure table exists and handle schema evolution.
+	if s.flatten {
+		if err := s.ensureFlatTable(events); err != nil {
+			return err
+		}
+		return s.writeFlatChunked(events)
+	}
+
+	// Non-flatten mode: VARIANT insert.
 	qualifiedTable := fmt.Sprintf("%s.%s.%s", s.database, s.schema, s.table)
 	query := fmt.Sprintf(
 		"INSERT INTO %s (event_data, event_key, event_topic, event_offset) SELECT PARSE_JSON(?), ?, ?, ?",
 		qualifiedTable,
 	)
 
-	// Split into small chunks to avoid driver timeout on large batches.
 	const chunkSize = 16
 	var chunkErrors int
 	var lastErr error
@@ -203,7 +229,7 @@ func (s *SnowflakeSink) Write(ctx context.Context, events []*pipeline.Event) err
 		if err := s.writeChunk(query, events[i:end]); err != nil {
 			chunkErrors++
 			lastErr = err
-			fmt.Fprintf(os.Stderr, "[snowflake] chunk %d–%d failed: %v\n", i, end, err)
+			fmt.Fprintf(os.Stderr, "[snowflake] chunk %d-%d failed: %v\n", i, end, err)
 		}
 	}
 
@@ -213,11 +239,8 @@ func (s *SnowflakeSink) Write(ctx context.Context, events []*pipeline.Event) err
 	return nil
 }
 
-// writeChunk inserts a single chunk of events inside its own transaction.
+// writeChunk inserts a single chunk of events inside its own transaction (VARIANT mode).
 func (s *SnowflakeSink) writeChunk(query string, events []*pipeline.Event) error {
-	// Use context.Background() so writes are not tied to the pipeline context.
-	// The pipeline ctx may already be cancelled (file source EOF + auto-terminate)
-	// by the time the final flush happens, which would corrupt the connection pool.
 	writeCtx, writeCancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer writeCancel()
 
@@ -250,6 +273,188 @@ func (s *SnowflakeSink) writeChunk(query string, events []*pipeline.Event) error
 	}
 
 	return nil
+}
+
+// ═══════════════════════════════════════════
+// Flatten mode
+// ═══════════════════════════════════════════
+
+// sfColumnType maps a Go value to a Snowflake column type.
+func sfColumnType(v any) string {
+	switch v.(type) {
+	case float64, float32, int, int64:
+		return "FLOAT"
+	case bool:
+		return "BOOLEAN"
+	case string:
+		return "VARCHAR"
+	default:
+		return "VARIANT"
+	}
+}
+
+// ensureFlatTable creates the table on the first call, and adds any new
+// columns discovered in subsequent batches via ALTER TABLE ADD COLUMN.
+func (s *SnowflakeSink) ensureFlatTable(events []*pipeline.Event) error {
+	newKeys := make(map[string]any)
+	for _, event := range events {
+		for k, v := range event.Value {
+			if !s.columnSet[k] {
+				if _, seen := newKeys[k]; !seen {
+					newKeys[k] = v
+				}
+			}
+		}
+	}
+
+	if len(newKeys) == 0 {
+		return nil
+	}
+
+	ddlCtx, ddlCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer ddlCancel()
+
+	qualifiedTable := fmt.Sprintf("%s.%s.%s", s.database, s.schema, s.table)
+
+	if !s.tableReady {
+		var colDefs []string
+		var colNames []string
+		for k := range newKeys {
+			colNames = append(colNames, k)
+		}
+		sort.Strings(colNames)
+
+		for _, k := range colNames {
+			colDefs = append(colDefs, fmt.Sprintf("%s %s", sfQuoteIdent(k), sfColumnType(newKeys[k])))
+		}
+		colDefs = append(colDefs, "loaded_at TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP()")
+
+		createDDL := fmt.Sprintf("CREATE TABLE IF NOT EXISTS %s (\n\t%s\n)",
+			qualifiedTable, strings.Join(colDefs, ",\n\t"))
+		if _, err := s.db.ExecContext(ddlCtx, createDDL); err != nil {
+			return fmt.Errorf("snowflake create flat table: %w", err)
+		}
+		s.tableReady = true
+		s.columns = colNames
+		for _, k := range colNames {
+			s.columnSet[k] = true
+		}
+		fmt.Fprintf(os.Stderr, "[snowflake] created flat table %s with %d columns\n",
+			qualifiedTable, len(colNames))
+		return nil
+	}
+
+	var added []string
+	for k := range newKeys {
+		colType := sfColumnType(newKeys[k])
+		alterDDL := fmt.Sprintf("ALTER TABLE %s ADD COLUMN IF NOT EXISTS %s %s",
+			qualifiedTable, sfQuoteIdent(k), colType)
+		if _, err := s.db.ExecContext(ddlCtx, alterDDL); err != nil {
+			return fmt.Errorf("snowflake alter table add column %s: %w", k, err)
+		}
+		s.columns = append(s.columns, k)
+		s.columnSet[k] = true
+		added = append(added, k)
+	}
+	if len(added) > 0 {
+		sort.Strings(s.columns)
+		fmt.Fprintf(os.Stderr, "[snowflake] added columns: %v\n", added)
+	}
+
+	return nil
+}
+
+// writeFlatChunked splits events into chunks and inserts with flat columns.
+func (s *SnowflakeSink) writeFlatChunked(events []*pipeline.Event) error {
+	const chunkSize = 16
+	var chunkErrors int
+	var lastErr error
+
+	for i := 0; i < len(events); i += chunkSize {
+		end := i + chunkSize
+		if end > len(events) {
+			end = len(events)
+		}
+		if err := s.writeFlatChunk(events[i:end]); err != nil {
+			chunkErrors++
+			lastErr = err
+			fmt.Fprintf(os.Stderr, "[snowflake] flat chunk %d-%d failed: %v\n", i, end, err)
+		}
+	}
+
+	if lastErr != nil {
+		return fmt.Errorf("snowflake flat write: %d chunk(s) failed, last error: %w", chunkErrors, lastErr)
+	}
+	return nil
+}
+
+// writeFlatChunk inserts a chunk of events into individually typed columns.
+func (s *SnowflakeSink) writeFlatChunk(events []*pipeline.Event) error {
+	writeCtx, writeCancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer writeCancel()
+
+	qualifiedTable := fmt.Sprintf("%s.%s.%s", s.database, s.schema, s.table)
+
+	var quotedCols []string
+	for _, c := range s.columns {
+		quotedCols = append(quotedCols, sfQuoteIdent(c))
+	}
+	placeholders := make([]string, len(s.columns))
+	for i := range placeholders {
+		placeholders[i] = "?"
+	}
+
+	query := fmt.Sprintf("INSERT INTO %s (%s) VALUES (%s)",
+		qualifiedTable,
+		strings.Join(quotedCols, ", "),
+		strings.Join(placeholders, ", "))
+
+	tx, err := s.db.BeginTx(writeCtx, nil)
+	if err != nil {
+		return fmt.Errorf("snowflake begin tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	stmt, err := tx.PrepareContext(writeCtx, query)
+	if err != nil {
+		return fmt.Errorf("snowflake prepare: %w", err)
+	}
+	defer stmt.Close()
+
+	for _, event := range events {
+		args := make([]any, len(s.columns))
+		for i, col := range s.columns {
+			v, ok := event.Value[col]
+			if !ok {
+				args[i] = nil
+				continue
+			}
+			switch v.(type) {
+			case map[string]any, []any:
+				b, err := json.Marshal(v)
+				if err != nil {
+					return fmt.Errorf("marshal nested field %s: %w", col, err)
+				}
+				args[i] = string(b)
+			default:
+				args[i] = v
+			}
+		}
+		if _, err := stmt.ExecContext(writeCtx, args...); err != nil {
+			return fmt.Errorf("snowflake flat insert: %w", err)
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("snowflake commit: %w", err)
+	}
+	return nil
+}
+
+// sfQuoteIdent quotes a Snowflake identifier with double quotes.
+func sfQuoteIdent(name string) string {
+	escaped := strings.ReplaceAll(name, `"`, `""`)
+	return `"` + escaped + `"`
 }
 
 // Flush is a no-op (writes are synchronous).

@@ -118,7 +118,7 @@ func BuildFromSpec(spec v1.Sink) (pipeline.Sink, error) {
 	case v1.SinkStdout:
 		return NewStdoutSink(), nil
 	case v1.SinkSnowflake:
-		return NewSnowflakeSink(spec.Database, spec.Schema, spec.Table, spec.Config), nil
+		return NewSnowflakeSink(spec.Database, spec.Schema, spec.Table, spec.Flatten, spec.Config), nil
 	case v1.SinkBigQuery:
 		project, _ := spec.Config["project"].(string)
 		return NewBigQuerySink(project, spec.Schema, spec.Table, spec.Config), nil
