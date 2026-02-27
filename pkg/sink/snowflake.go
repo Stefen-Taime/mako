@@ -135,9 +135,12 @@ func (s *SnowflakeSink) Open(ctx context.Context) error {
 	db.SetMaxOpenConns(10)
 	db.SetMaxIdleConns(5)
 
-	// Use a dedicated timeout for Snowflake init operations (ping, CREATE TABLE)
-	// because the initial connection can be slow.
-	initCtx, initCancel := context.WithTimeout(ctx, 30*time.Second)
+	// Use context.Background() so the DB connection pool is not tied to the
+	// pipeline context. When the pipeline ctx is cancelled (e.g. file source
+	// EOF + auto-terminate), a ctx-derived context would invalidate the
+	// pool and cause Write() to fail with context deadline exceeded.
+	// Graceful shutdown is handled by Close() calling db.Close().
+	initCtx, initCancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer initCancel()
 
 	if err := db.PingContext(initCtx); err != nil {
@@ -180,11 +183,10 @@ func (s *SnowflakeSink) Write(ctx context.Context, events []*pipeline.Event) err
 		return nil
 	}
 
-	// Use a dedicated timeout for the write transaction. The parent ctx may
-	// have a very short deadline (batch-flush tick) that is not enough for
-	// Snowflake network round-trips. We still respect cancellation from the
-	// parent so a pipeline shutdown propagates immediately.
-	writeCtx, writeCancel := context.WithTimeout(ctx, 60*time.Second)
+	// Use context.Background() so writes are not tied to the pipeline context.
+	// The pipeline ctx may already be cancelled (file source EOF + auto-terminate)
+	// by the time the final flush happens, which would corrupt the connection pool.
+	writeCtx, writeCancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer writeCancel()
 
 	qualifiedTable := fmt.Sprintf("%s.%s.%s", s.database, s.schema, s.table)
