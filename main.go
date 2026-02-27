@@ -25,6 +25,7 @@ import (
 	"github.com/Stefen-Taime/mako/pkg/alerting"
 	"github.com/Stefen-Taime/mako/pkg/codegen"
 	"github.com/Stefen-Taime/mako/pkg/config"
+	"github.com/Stefen-Taime/mako/pkg/join"
 	"github.com/Stefen-Taime/mako/pkg/kafka"
 	"github.com/Stefen-Taime/mako/pkg/observability"
 	"github.com/Stefen-Taime/mako/pkg/pipeline"
@@ -506,28 +507,67 @@ func cmdRun(args []string) error {
 
 	// Build source
 	p := spec.Pipeline
-	brokers := p.Source.Brokers
-	if brokers == "" {
-		brokers = os.Getenv("KAFKA_BROKERS")
+	defaultBrokers := p.Source.Brokers
+	if defaultBrokers == "" {
+		defaultBrokers = os.Getenv("KAFKA_BROKERS")
 	}
-	if brokers == "" {
-		brokers = "localhost:9092"
+	if defaultBrokers == "" {
+		defaultBrokers = "localhost:9092"
 	}
 
 	var src pipeline.Source
-	switch p.Source.Type {
-	case "kafka":
-		src = kafka.NewSource(brokers, p.Source.Topic, p.Source.ConsumerGroup, p.Source.StartOffset)
-	case "file":
-		src = source.NewFileSource(p.Source.Config)
-	case "postgres_cdc":
-		src = source.NewPostgresCDCSource(p.Source.Config)
-	case "http":
-		src = source.NewHTTPSource(p.Source.Config)
-	case "duckdb":
-		src = source.NewDuckDBSource(p.Source.Config)
-	default:
-		return fmt.Errorf("unsupported source type for run: %s (supported: kafka, file, postgres_cdc, http, duckdb)", p.Source.Type)
+
+	if len(p.Sources) > 0 {
+		// Multi-source mode
+		namedSources := make(map[string]pipeline.Source, len(p.Sources))
+		sourceNames := make([]string, 0, len(p.Sources))
+
+		for _, s := range p.Sources {
+			var oneSrc pipeline.Source
+			b := s.Brokers
+			if b == "" {
+				b = defaultBrokers
+			}
+			switch s.Type {
+			case "kafka":
+				oneSrc = kafka.NewSource(b, s.Topic, s.ConsumerGroup, s.StartOffset)
+			case "http":
+				oneSrc = source.NewHTTPSource(s.Config)
+			case "postgres_cdc":
+				oneSrc = source.NewPostgresCDCSource(s.Config)
+			case "duckdb":
+				oneSrc = source.NewDuckDBSource(s.Config)
+			case "file":
+				oneSrc = source.NewFileSource(s.Config)
+			default:
+				return fmt.Errorf("unsupported source type %q for source %q", s.Type, s.Name)
+			}
+			namedSources[s.Name] = oneSrc
+			sourceNames = append(sourceNames, s.Name)
+		}
+
+		joiner, err := join.New(p.Join, sourceNames)
+		if err != nil {
+			return fmt.Errorf("build join engine: %w", err)
+		}
+
+		src = source.NewMultiSource(namedSources, sourceNames, joiner)
+	} else {
+		// Single source mode
+		switch p.Source.Type {
+		case "kafka":
+			src = kafka.NewSource(defaultBrokers, p.Source.Topic, p.Source.ConsumerGroup, p.Source.StartOffset)
+		case "file":
+			src = source.NewFileSource(p.Source.Config)
+		case "postgres_cdc":
+			src = source.NewPostgresCDCSource(p.Source.Config)
+		case "http":
+			src = source.NewHTTPSource(p.Source.Config)
+		case "duckdb":
+			src = source.NewDuckDBSource(p.Source.Config)
+		default:
+			return fmt.Errorf("unsupported source type for run: %s (supported: kafka, file, postgres_cdc, http, duckdb)", p.Source.Type)
+		}
 	}
 
 	// Build sinks
@@ -559,10 +599,12 @@ func cmdRun(args []string) error {
 		dlqTopic := ""
 		if p.Schema != nil && p.Schema.DLQTopic != "" {
 			dlqTopic = p.Schema.DLQTopic
-		} else {
+		} else if p.Source.Topic != "" {
 			dlqTopic = p.Source.Topic + ".dlq"
+		} else {
+			dlqTopic = p.Name + ".dlq"
 		}
-		dlqSink = kafka.NewSink(brokers, dlqTopic).WithAutoTopicCreation()
+		dlqSink = kafka.NewSink(defaultBrokers, dlqTopic).WithAutoTopicCreation()
 		if err := dlqSink.Open(context.Background()); err != nil {
 			return fmt.Errorf("open DLQ sink %s: %w", dlqTopic, err)
 		}

@@ -14,6 +14,7 @@ import (
 	"time"
 
 	v1 "github.com/Stefen-Taime/mako/api/v1"
+	"github.com/Stefen-Taime/mako/pkg/kafka"
 	"github.com/Stefen-Taime/mako/pkg/pipeline"
 )
 
@@ -143,20 +144,36 @@ func BuildFromSpec(spec v1.Sink) (pipeline.Sink, error) {
 	}
 }
 
-// NewKafkaSink creates a Kafka sink adapter.
+// NewKafkaSink creates a Kafka sink that writes events to a Kafka topic
+// using the franz-go based implementation in pkg/kafka.
 func NewKafkaSink(brokers, topic string) pipeline.Sink {
-	return &kafkaSinkAdapter{brokers: brokers, topic: topic}
+	return &kafkaSinkAdapter{
+		inner: kafka.NewSink(brokers, topic),
+		topic: topic,
+	}
 }
 
 type kafkaSinkAdapter struct {
-	brokers string
-	topic   string
+	inner *kafka.Sink
+	topic string
 }
 
 func (s *kafkaSinkAdapter) Open(ctx context.Context) error {
-	return nil // Kafka sink Open is handled by the kafka package directly when used via cmdRun
+	return s.inner.Open(ctx)
 }
-func (s *kafkaSinkAdapter) Write(ctx context.Context, events []*pipeline.Event) error { return nil }
-func (s *kafkaSinkAdapter) Flush(ctx context.Context) error                           { return nil }
-func (s *kafkaSinkAdapter) Close() error                                              { return nil }
-func (s *kafkaSinkAdapter) Name() string                                              { return "kafka:" + s.topic }
+
+func (s *kafkaSinkAdapter) Write(ctx context.Context, events []*pipeline.Event) error {
+	return s.inner.Write(ctx, events)
+}
+
+func (s *kafkaSinkAdapter) Flush(ctx context.Context) error {
+	return s.inner.Flush(ctx)
+}
+
+func (s *kafkaSinkAdapter) Close() error {
+	return s.inner.Close()
+}
+
+func (s *kafkaSinkAdapter) Name() string {
+	return "kafka:" + s.topic
+}
