@@ -403,19 +403,27 @@ func (s *SnowflakeSink) writeFlatChunk(events []*pipeline.Event) error {
 	for _, c := range s.columns {
 		quotedCols = append(quotedCols, sfQuoteIdent(c))
 	}
-	placeholders := make([]string, len(s.columns))
+	// Snowflake forbids function calls (like PARSE_JSON) inside a VALUES
+	// clause of a prepared statement. Instead we use INSERT INTO ... SELECT
+	// ... FROM VALUES (?,...) and apply PARSE_JSON in the outer SELECT for
+	// VARIANT columns. Snowflake names positional columns column1, column2, etc.
+	innerPlaceholders := make([]string, len(s.columns))
+	selectExprs := make([]string, len(s.columns))
 	for i, c := range s.columns {
+		innerPlaceholders[i] = "?"
+		colRef := fmt.Sprintf("column%d", i+1)
 		if s.columnType[c] == "VARIANT" {
-			placeholders[i] = "PARSE_JSON(?)"
+			selectExprs[i] = fmt.Sprintf("PARSE_JSON(%s)", colRef)
 		} else {
-			placeholders[i] = "?"
+			selectExprs[i] = colRef
 		}
 	}
 
-	query := fmt.Sprintf("INSERT INTO %s (%s) VALUES (%s)",
+	query := fmt.Sprintf("INSERT INTO %s (%s) SELECT %s FROM VALUES (%s)",
 		qualifiedTable,
 		strings.Join(quotedCols, ", "),
-		strings.Join(placeholders, ", "))
+		strings.Join(selectExprs, ", "),
+		strings.Join(innerPlaceholders, ", "))
 
 	tx, err := s.db.BeginTx(writeCtx, nil)
 	if err != nil {
