@@ -88,9 +88,14 @@ func NewSnowflakeSink(database, schema, table string, config map[string]any) *Sn
 			if role != "" {
 				params = append(params, "role="+role)
 			}
-			if len(params) > 0 {
-				dsn += "?" + strings.Join(params, "&")
-			}
+			// gosnowflake driver-level timeouts — without these the driver
+			// uses very short defaults that cause context deadline exceeded
+			// even when the Go context has plenty of time left.
+			params = append(params, "loginTimeout=30")
+			params = append(params, "requestTimeout=60")
+			params = append(params, "clientTimeout=300")
+
+			dsn += "?" + strings.Join(params, "&")
 		}
 	}
 
