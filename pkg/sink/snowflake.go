@@ -177,9 +177,16 @@ func (s *SnowflakeSink) Write(ctx context.Context, events []*pipeline.Event) err
 		return nil
 	}
 
+	// Use a dedicated timeout for the write transaction. The parent ctx may
+	// have a very short deadline (batch-flush tick) that is not enough for
+	// Snowflake network round-trips. We still respect cancellation from the
+	// parent so a pipeline shutdown propagates immediately.
+	writeCtx, writeCancel := context.WithTimeout(ctx, 60*time.Second)
+	defer writeCancel()
+
 	qualifiedTable := fmt.Sprintf("%s.%s.%s", s.database, s.schema, s.table)
 
-	tx, err := s.db.BeginTx(ctx, nil)
+	tx, err := s.db.BeginTx(writeCtx, nil)
 	if err != nil {
 		return fmt.Errorf("snowflake begin tx: %w", err)
 	}
@@ -190,7 +197,7 @@ func (s *SnowflakeSink) Write(ctx context.Context, events []*pipeline.Event) err
 		qualifiedTable,
 	)
 
-	stmt, err := tx.PrepareContext(ctx, query)
+	stmt, err := tx.PrepareContext(writeCtx, query)
 	if err != nil {
 		return fmt.Errorf("snowflake prepare: %w", err)
 	}
@@ -202,7 +209,7 @@ func (s *SnowflakeSink) Write(ctx context.Context, events []*pipeline.Event) err
 			return fmt.Errorf("marshal event: %w", err)
 		}
 
-		_, err = stmt.ExecContext(ctx, string(data), string(event.Key), event.Topic, event.Offset)
+		_, err = stmt.ExecContext(writeCtx, string(data), string(event.Key), event.Topic, event.Offset)
 		if err != nil {
 			return fmt.Errorf("snowflake insert: %w", err)
 		}
