@@ -3,6 +3,7 @@ package transform
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"sync"
@@ -10,6 +11,7 @@ import (
 	"github.com/tetratelabs/wazero"
 	"github.com/tetratelabs/wazero/api"
 	"github.com/tetratelabs/wazero/imports/wasi_snapshot_preview1"
+	"github.com/tetratelabs/wazero/sys"
 )
 
 // ═══════════════════════════════════════════
@@ -111,18 +113,40 @@ func (wt *WASMTransform) getInstance(ctx context.Context) (*wasmInstance, error)
 		return v.(*wasmInstance), nil
 	}
 
-	// Create a new instance with a unique name
+	// Create a new instance with a unique name.
+	// We skip automatic _start so the module stays open, then call _start
+	// manually. Go-standard WASM modules exit with code 0 after main()
+	// returns — we intercept that via sys.ExitError and keep the module.
+	// Rust cdylib modules have no _start, so the if-block is skipped.
+	// TinyGo modules have a benign _start that returns without exiting.
 	wt.mu.Lock()
 	cfg := wazero.NewModuleConfig().
 		WithStdout(os.Stdout).
 		WithStderr(os.Stderr).
-		WithStartFunctions(). // Don't call _start — plugins only need exports (alloc/transform)
+		WithStartFunctions(). // skip automatic _start
 		WithName("")
 	wt.mu.Unlock()
 
 	mod, err := wt.runtime.InstantiateModule(ctx, wt.compiled, cfg)
 	if err != nil {
 		return nil, fmt.Errorf("wasm instantiate: %w", err)
+	}
+
+	// Call _start manually if it exists (initializes Go runtime, TinyGo runtime, etc.)
+	if startFn := mod.ExportedFunction("_start"); startFn != nil {
+		_, err := startFn.Call(ctx)
+		if err != nil {
+			// Go standard modules exit with code 0 after main() — that's expected.
+			// The module stays open because InstantiateModule didn't tie its
+			// lifecycle to _start (we used WithStartFunctions() to skip it).
+			var exitErr *sys.ExitError
+			if errors.As(err, &exitErr) && exitErr.ExitCode() == 0 {
+				// Runtime initialized, main() returned cleanly — continue
+			} else {
+				mod.Close(ctx)
+				return nil, fmt.Errorf("wasm _start: %w", err)
+			}
+		}
 	}
 
 	inst := &wasmInstance{
