@@ -1,17 +1,17 @@
-//go:build tinygo || wasip1
+//go:build tinygo
 
+// ⚠️  STATUS: STANDBY — Go standard (GOOS=wasip1) does not work for WASM plugins.
+// The Go runtime requires _start to initialize, but _start exits the module.
+// Use Rust (examples/wasm-plugin-rust/) or TinyGo when it supports Go 1.26+.
+//
 // Example WASM plugin for Mako.
 //
 // This plugin adds a "_enriched" flag and a "_processed_at" timestamp
 // to every event passing through the pipeline.
 //
-// Build with TinyGo:
+// Build with TinyGo (when compatible):
 //
 //	tinygo build -o plugin.wasm -target=wasi -no-debug main.go
-//
-// Or with standard Go (larger binary):
-//
-//	GOOS=wasip1 GOARCH=wasm go build -o plugin.wasm main.go
 //
 // Usage in pipeline.yaml:
 //

@@ -1,5 +1,9 @@
 # Mako WASM Plugin — Rust Example
 
+> **Rust is the recommended language for Mako WASM plugins.**
+> Go standard (wasip1) is not supported due to runtime initialization constraints.
+> TinyGo support is pending (requires TinyGo compatibility with Go 1.26+).
+
 Rust implementation of the Mako plugin ABI. Adds `_enriched: true` and `_plugin_lang: "rust"` to every event.
 
 ## Prerequisites
