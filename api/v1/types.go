@@ -237,6 +237,12 @@ type MonitoringSpec struct {
 	Metrics       *MetricsSpec      `yaml:"metrics,omitempty" json:"metrics,omitempty"`
 	Alerts        []AlertSpec       `yaml:"alerts,omitempty" json:"alerts,omitempty"`
 	Labels        map[string]string `yaml:"labels,omitempty" json:"labels,omitempty"`
+
+	// Slack alerting
+	SlackWebhookURL string `yaml:"slackWebhookURL,omitempty" json:"slackWebhookURL,omitempty"`
+	AlertOnError    bool   `yaml:"alertOnError,omitempty" json:"alertOnError,omitempty"`       // default: true
+	AlertOnSLA      bool   `yaml:"alertOnSLA,omitempty" json:"alertOnSLA,omitempty"`           // default: true
+	AlertOnComplete bool   `yaml:"alertOnComplete,omitempty" json:"alertOnComplete,omitempty"` // default: false
 }
 
 type MetricsSpec struct {

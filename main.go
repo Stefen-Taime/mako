@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/Stefen-Taime/mako/internal/cli"
+	"github.com/Stefen-Taime/mako/pkg/alerting"
 	"github.com/Stefen-Taime/mako/pkg/codegen"
 	"github.com/Stefen-Taime/mako/pkg/config"
 	"github.com/Stefen-Taime/mako/pkg/kafka"
@@ -631,9 +632,18 @@ func cmdRun(args []string) error {
 		fmt.Fprintf(os.Stderr, "💚 Health:   http://localhost:%d/health\n", metricsPort)
 		fmt.Fprintf(os.Stderr, "📋 Status:   http://localhost:%d/status\n", metricsPort)
 	}
+	// Create Slack alerter (nil-safe if not configured)
+	slackAlerter := alerting.NewSlackAlerter(spec)
+	if slackAlerter != nil {
+		fmt.Fprintf(os.Stderr, "🔔 Slack:    alerts → %s\n", slackAlerter.Channel)
+	}
+
 	fmt.Fprintf(os.Stderr, "🚀 Starting pipeline...\n\n")
 
+	startTime := time.Now()
+
 	if err := pipe.Start(ctx); err != nil {
+		slackAlerter.SendError(ctx, err, 0, 0)
 		return fmt.Errorf("start pipeline: %w", err)
 	}
 
@@ -650,32 +660,62 @@ func cmdRun(args []string) error {
 		obsSrv.Metrics().SetSinkLatency(pipe.MetricsSinkLatency().Load())
 	}
 
+	// Parse freshnessSLA for SLA breach detection
+	var freshnessSLA time.Duration
+	if p.Monitoring != nil && p.Monitoring.FreshnessSLA != "" {
+		freshnessSLA, _ = config.ParseDuration(p.Monitoring.FreshnessSLA)
+	}
+
 	// Sync metrics from pipeline counters to observability server
 	var syncDone chan struct{}
 	if obsSrv != nil {
 		obsSrv.SetReady(true)
-		syncDone = make(chan struct{})
-		// Sync pipeline counters to observability server periodically.
-		// Uses pipe.Done() to exit instead of ctx.Done() so that the final
-		// counter values are captured even for short-lived pipelines.
-		go func() {
-			defer close(syncDone)
-			ticker := time.NewTicker(500 * time.Millisecond)
-			defer ticker.Stop()
-			for {
-				select {
-				case <-pipe.Done():
-					syncMetrics() // one final sync after source exhaustion
-					return
-				case <-ctx.Done():
-					syncMetrics() // one final sync on shutdown
-					return
-				case <-ticker.C:
-					syncMetrics()
+	}
+	syncDone = make(chan struct{})
+	// Sync pipeline counters to observability server periodically.
+	// Also checks SLA breach and error counts for alerting.
+	go func() {
+		defer close(syncDone)
+		ticker := time.NewTicker(500 * time.Millisecond)
+		defer ticker.Stop()
+		var slaBreach bool
+		var lastErrorCount int64
+		for {
+			select {
+			case <-pipe.Done():
+				syncMetrics()
+				return
+			case <-ctx.Done():
+				syncMetrics()
+				return
+			case <-ticker.C:
+				syncMetrics()
+
+				// SLA breach detection
+				if freshnessSLA > 0 && !slaBreach {
+					st := pipe.Status()
+					if st.LastEvent != nil {
+						delay := time.Since(*st.LastEvent)
+						if delay > freshnessSLA {
+							slaBreach = true
+							slackAlerter.SendSLABreach(ctx, freshnessSLA, delay)
+						}
+					}
+				}
+
+				// Error alert (send once per new error batch)
+				errCount := pipe.MetricsErrors().Load()
+				if errCount > lastErrorCount {
+					slackAlerter.SendError(ctx,
+						fmt.Errorf("%d new error(s) during pipeline execution", errCount-lastErrorCount),
+						pipe.MetricsEventsIn().Load(),
+						pipe.MetricsEventsOut().Load(),
+					)
+					lastErrorCount = errCount
 				}
 			}
-		}()
-	}
+		}
+	}()
 
 	fmt.Fprintf(os.Stderr, "✅ Pipeline running. Press Ctrl+C to stop.\n")
 
@@ -692,9 +732,7 @@ func cmdRun(args []string) error {
 	}
 
 	// Wait for the sync goroutine to finish its final copy
-	if syncDone != nil {
-		<-syncDone
-	}
+	<-syncDone
 
 	if obsSrv != nil {
 		// Final sync after pipeline.Stop() to capture any events flushed during shutdown
@@ -704,8 +742,19 @@ func cmdRun(args []string) error {
 	}
 
 	status := pipe.Status()
+	duration := time.Since(startTime)
 	fmt.Fprintf(os.Stderr, "📊 Final stats: %d in, %d out, %d errors\n",
 		status.EventsIn, status.EventsOut, status.Errors)
+
+	// Send completion alert
+	slackAlerter.SendComplete(ctx, status.EventsIn, status.EventsOut, status.Errors, duration)
+
 	fmt.Fprintf(os.Stderr, "✅ Pipeline stopped.\n")
+
+	// Small delay to let async Slack messages fire before process exits
+	if slackAlerter != nil {
+		time.Sleep(200 * time.Millisecond)
+	}
+
 	return nil
 }

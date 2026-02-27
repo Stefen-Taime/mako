@@ -196,7 +196,10 @@ func (s *DuckDBSink) ensureTable(ctx context.Context, events []*pipeline.Event) 
 		for _, k := range colNames {
 			colDefs = append(colDefs, fmt.Sprintf("%s %s", quoteIdent(k), duckDBColumnType(newKeys[k])))
 		}
-		colDefs = append(colDefs, "loaded_at TIMESTAMP DEFAULT current_timestamp")
+		// Only add loaded_at if the source data doesn't already contain it
+		if _, hasLoadedAt := newKeys["loaded_at"]; !hasLoadedAt {
+			colDefs = append(colDefs, "loaded_at TIMESTAMP DEFAULT current_timestamp")
+		}
 
 		createDDL := fmt.Sprintf("CREATE TABLE IF NOT EXISTS %s (\n\t%s\n)",
 			quotedTable, strings.Join(colDefs, ",\n\t"))
@@ -208,6 +211,8 @@ func (s *DuckDBSink) ensureTable(ctx context.Context, events []*pipeline.Event) 
 		for _, k := range colNames {
 			s.columnSet[k] = true
 		}
+		// Track loaded_at even if auto-added, so schema evolution skips it
+		s.columnSet["loaded_at"] = true
 		fmt.Fprintf(os.Stderr, "[duckdb] created table %s with %d columns\n",
 			quotedTable, len(colNames))
 		return nil

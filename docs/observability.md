@@ -103,6 +103,76 @@ Example Avro schema in the registry:
 - Failed events routed to DLQ or rejected
 - Automatic schema type detection from Registry (`schemaType` field)
 
+## Slack Alerting
+
+Send pipeline alerts to a Slack channel via incoming webhook. Mako notifies on errors, SLA breaches, and pipeline completions.
+
+```yaml
+monitoring:
+  freshnessSLA: 5m
+  alertChannel: "#data-alerts"
+  slackWebhookURL: ${SLACK_WEBHOOK_URL}
+  alertOnError: true       # default: true
+  alertOnSLA: true         # default: true
+  alertOnComplete: true    # default: false
+  metrics:
+    enabled: true
+    port: 9090
+```
+
+### Configuration
+
+| Key | Default | Description |
+|---|---|---|
+| `slackWebhookURL` | — | Slack incoming webhook URL. Supports `${ENV_VAR}` expansion. Falls back to `SLACK_WEBHOOK_URL` env var |
+| `alertChannel` | — | Slack channel (e.g., `#data-alerts`). Passed in the webhook payload |
+| `alertOnError` | `true` | Send alert when pipeline errors occur |
+| `alertOnSLA` | `true` | Send alert when `freshnessSLA` is breached (time since last event exceeds threshold) |
+| `alertOnComplete` | `false` | Send summary alert when pipeline completes |
+
+If `slackWebhookURL` is empty and `SLACK_WEBHOOK_URL` is not set, alerting is silently disabled. All webhook calls are asynchronous (goroutine) with a 5s timeout — failures are logged to stderr but never crash the pipeline.
+
+### Alert types
+
+**Error alert** (red):
+- Triggered when the pipeline error counter increases
+- Includes: error message, events in/out counts
+
+**SLA breach alert** (red):
+- Triggered once when `time.Since(lastEvent) > freshnessSLA`
+- Includes: configured SLA, actual delay
+- Sent at most once per pipeline run (no spam)
+
+**Completion alert** (green/orange):
+- Triggered when the pipeline shuts down
+- Green if 0 errors, orange if errors > 0
+- Includes: events in/out, error count, total duration
+
+### Message format
+
+Alerts use Slack Block Kit attachments with color coding:
+
+| Condition | Color |
+|---|---|
+| Error / SLA breach | Red (`#dc3545`) |
+| Completion (0 errors) | Green (`#28a745`) |
+| Completion (with errors) | Orange (`#fd7e14`) |
+
+Messages are posted as "Mako Pipeline" with a :shark: emoji.
+
+### Setup
+
+1. Create a [Slack Incoming Webhook](https://api.slack.com/messaging/webhooks) for your workspace
+2. Set the URL as an environment variable:
+   ```bash
+   export SLACK_WEBHOOK_URL=https://hooks.slack.com/services/T00/B00/xxx
+   ```
+3. Or configure it directly in the pipeline YAML:
+   ```yaml
+   monitoring:
+     slackWebhookURL: https://hooks.slack.com/services/T00/B00/xxx
+   ```
+
 ## Fault Isolation
 
 Each pipeline runs independently. Failed events go to a Dead Letter Queue instead of blocking the pipeline.

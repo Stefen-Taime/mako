@@ -224,7 +224,7 @@ func validateWindow(r *ValidationResult, w *v1.WindowSpec, prefix string) {
 	}
 	if w.Size == "" {
 		r.addError(prefix+".size", "required")
-	} else if _, err := parseDuration(w.Size); err != nil {
+	} else if _, err := ParseDuration(w.Size); err != nil {
 		r.addError(prefix+".size", fmt.Sprintf("invalid duration: %s", err))
 	}
 	if w.Type == "sliding" && w.Slide == "" {
@@ -276,8 +276,27 @@ func validateSchema(r *ValidationResult, s *v1.SchemaSpec) {
 
 func validateMonitoring(r *ValidationResult, m *v1.MonitoringSpec) {
 	if m.FreshnessSLA != "" {
-		if _, err := parseDuration(m.FreshnessSLA); err != nil {
+		if _, err := ParseDuration(m.FreshnessSLA); err != nil {
 			r.addError("monitoring.freshnessSLA", fmt.Sprintf("invalid duration: %s", err))
+		}
+	}
+
+	// Slack alerting validation
+	webhookURL := os.ExpandEnv(m.SlackWebhookURL)
+	if webhookURL == "" {
+		webhookURL = os.Getenv("SLACK_WEBHOOK_URL")
+	}
+
+	if m.AlertChannel != "" && webhookURL == "" {
+		r.addWarning("monitoring.slackWebhookURL",
+			"alertChannel is set but no webhook URL configured (set slackWebhookURL or SLACK_WEBHOOK_URL)")
+	}
+
+	if m.SlackWebhookURL != "" {
+		resolved := os.ExpandEnv(m.SlackWebhookURL)
+		if resolved != "" && !strings.HasPrefix(resolved, "https://") {
+			r.addError("monitoring.slackWebhookURL",
+				"must start with https:// (e.g., https://hooks.slack.com/services/...)")
 		}
 	}
 }
@@ -341,8 +360,8 @@ func isValidName(name string) bool {
 	return name[0] != '-' && name[len(name)-1] != '-'
 }
 
-// parseDuration parses durations like "5m", "1h", "30s", "1d".
-func parseDuration(s string) (time.Duration, error) {
+// ParseDuration parses durations like "5m", "1h", "30s", "1d".
+func ParseDuration(s string) (time.Duration, error) {
 	s = strings.TrimSpace(s)
 	if strings.HasSuffix(s, "d") {
 		s = strings.TrimSuffix(s, "d")

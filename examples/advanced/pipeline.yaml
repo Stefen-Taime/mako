@@ -118,6 +118,10 @@ pipeline:
   monitoring:
     freshnessSLA: 2m
     alertChannel: "#fraud-alerts"
+    slackWebhookURL: ${SLACK_WEBHOOK_URL}
+    alertOnError: true
+    alertOnSLA: true
+    alertOnComplete: true
     metrics:
       enabled: true
       port: 9090
