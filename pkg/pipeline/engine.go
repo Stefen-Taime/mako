@@ -69,6 +69,7 @@ type Pipeline struct {
 	state  atomic.Value // v1.PipelineState
 	cancel context.CancelFunc
 	wg     sync.WaitGroup
+	done   chan struct{} // closed when the event loop exits (e.g. file source EOF)
 }
 
 // New creates a new pipeline from a spec, source, transforms, and sinks.
@@ -78,6 +79,7 @@ func New(spec v1.Pipeline, source Source, chain *transform.Chain, sinks []Sink) 
 		source: source,
 		chain:  chain,
 		sinks:  sinks,
+		done:   make(chan struct{}),
 	}
 	p.state.Store(v1.StateStopped)
 	return p
@@ -139,6 +141,7 @@ func (p *Pipeline) Start(ctx context.Context) error {
 	go func() {
 		defer p.wg.Done()
 		p.eventLoop(ctx, eventCh, batchSize, flushInterval)
+		close(p.done)
 	}()
 
 	return nil
@@ -301,6 +304,11 @@ func (p *Pipeline) MetricsDLQCount() *atomic.Int64  { return &p.dlqCount }
 func (p *Pipeline) MetricsSchemaFails() *atomic.Int64 { return &p.schemaFails }
 // StartTime returns when the pipeline started.
 func (p *Pipeline) StartTime() time.Time { return p.startedAt }
+
+// Done returns a channel that is closed when the pipeline event loop has
+// finished processing (e.g. file source reached EOF). For streaming sources
+// like Kafka this channel stays open until the pipeline is explicitly stopped.
+func (p *Pipeline) Done() <-chan struct{} { return p.done }
 
 // handleError handles sink write errors with retry/DLQ logic.
 func (p *Pipeline) handleError(ctx context.Context, err error, batch []*Event) {

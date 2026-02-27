@@ -70,7 +70,7 @@ mako generate pipeline.yaml --tf > infra.tf
 | Sources | Kafka (franz-go), File (JSONL, CSV, JSON) — [docs](docs/sources.md) |
 | Transforms | hash, mask, filter, rename, dedupe + WASM plugins — [docs](docs/transforms.md) |
 | Sinks | PostgreSQL, Snowflake, BigQuery, ClickHouse, S3, GCS, Kafka — [docs](docs/sinks.md) |
-| Schema | Confluent Schema Registry (JSON Schema validation) |
+| Schema | Confluent Schema Registry (JSON Schema + Avro) — [docs](docs/observability.md#schema-enforcement) |
 | Observability | Prometheus /metrics, /health, /ready, /status — [docs](docs/observability.md) |
 | Deploy | Helm chart, `mako generate --k8s` + `--tf` — [helm](docs/helm.md) / [codegen](docs/codegen.md) |
 | Fault tolerance | DLQ + retries + exponential backoff |

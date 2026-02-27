@@ -19,9 +19,9 @@ Features:
 - Header propagation
 - Graceful shutdown with offset commit
 
-## File (JSONL, CSV, JSON)
+## File (JSONL, CSV, JSON + HTTP URLs)
 
-Read events from local files. Useful for backfill, testing, and batch processing.
+Read events from local files **or remote HTTP/HTTPS URLs**. Useful for backfill, testing, and batch processing.
 
 ```yaml
 source:
@@ -34,7 +34,26 @@ source:
     csv_delimiter: ","                  # field separator (CSV)
 ```
 
-Supported formats:
+### HTTP/HTTPS URLs
+
+Point `path` directly to a remote file — no download needed. The response body is streamed directly to the reader (no temp file).
+
+```yaml
+source:
+  type: file
+  config:
+    path: https://raw.githubusercontent.com/user/repo/main/data.json
+    format: json
+```
+
+Works with any format (JSON, JSONL, CSV). At `Open()` a HEAD request validates reachability; at `Read()` a GET streams the data.
+
+### Supported formats
+
 - **JSONL** (`.jsonl`, `.ndjson`): one JSON object per line
 - **CSV** (`.csv`): with optional header row, configurable delimiter
 - **JSON** (`.json`): single object or array of objects
+
+### Auto-termination
+
+When the file source (local or URL) reaches EOF, the pipeline shuts down automatically — no need for `Ctrl+C`.

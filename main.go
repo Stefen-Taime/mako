@@ -655,9 +655,13 @@ func cmdRun(args []string) error {
 
 	fmt.Fprintf(os.Stderr, "✅ Pipeline running. Press Ctrl+C to stop.\n")
 
-	// Wait for shutdown signal
-	<-sigCh
-	fmt.Fprintf(os.Stderr, "\n⏹️  Shutting down gracefully...\n")
+	// Wait for shutdown signal OR pipeline completion (e.g. file source EOF)
+	select {
+	case <-sigCh:
+		fmt.Fprintf(os.Stderr, "\n⏹️  Shutting down gracefully...\n")
+	case <-pipe.Done():
+		fmt.Fprintf(os.Stderr, "\n📄 Source exhausted. Shutting down...\n")
+	}
 
 	if obsSrv != nil {
 		obsSrv.SetReady(false)

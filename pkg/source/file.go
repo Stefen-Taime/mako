@@ -1,6 +1,7 @@
 // Package source implements input adapters for Mako pipelines.
 //
-// FileSource reads events from local files (JSONL, CSV, Parquet).
+// FileSource reads events from local files or HTTP/HTTPS URLs
+// (JSONL, CSV, JSON).
 package source
 
 import (
@@ -10,6 +11,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -21,10 +23,10 @@ import (
 )
 
 // ═══════════════════════════════════════════
-// File Source (JSONL, CSV, Parquet)
+// File Source (JSONL, CSV, JSON + HTTP URLs)
 // ═══════════════════════════════════════════
 
-// FileSource reads events from local files.
+// FileSource reads events from local files or remote HTTP/HTTPS URLs.
 // Supports JSONL (.jsonl, .json), CSV (.csv), and line-delimited formats.
 //
 // Configuration via YAML:
@@ -32,8 +34,9 @@ import (
 //	source:
 //	  type: file
 //	  config:
-//	    path: /data/events.jsonl          # single file
-//	    # path: /data/events/*.jsonl      # glob pattern
+//	    path: /data/events.jsonl                                           # local file
+//	    # path: /data/events/*.jsonl                                      # glob pattern
+//	    # path: https://raw.githubusercontent.com/user/repo/main/data.json # HTTP URL
 //	    format: jsonl                      # jsonl|csv|json (auto-detected from extension)
 //	    csv_header: true                   # first line is header (CSV only)
 //	    csv_delimiter: ","                 # field separator (CSV only)
@@ -101,10 +104,32 @@ func NewFileSource(config map[string]any) *FileSource {
 	}
 }
 
+// isURL returns true if the path looks like an HTTP/HTTPS URL.
+func isURL(path string) bool {
+	return strings.HasPrefix(path, "http://") || strings.HasPrefix(path, "https://")
+}
+
 // Open validates the file source configuration.
 func (s *FileSource) Open(ctx context.Context) error {
 	if s.path == "" {
 		return fmt.Errorf("file source: path is required (set config.path)")
+	}
+
+	// HTTP/HTTPS URL — check reachability with a HEAD request
+	if isURL(s.path) {
+		req, err := http.NewRequestWithContext(ctx, http.MethodHead, s.path, nil)
+		if err != nil {
+			return fmt.Errorf("file source: invalid url %q: %w", s.path, err)
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			return fmt.Errorf("file source: url unreachable %q: %w", s.path, err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode >= 400 {
+			return fmt.Errorf("file source: url %q returned HTTP %d", s.path, resp.StatusCode)
+		}
+		return nil
 	}
 
 	// Check if path contains glob pattern
@@ -134,7 +159,7 @@ func (s *FileSource) Read(ctx context.Context) (<-chan *pipeline.Event, error) {
 	return s.eventCh, nil
 }
 
-// readLoop reads all files and pushes events to the channel.
+// readLoop reads all files/URLs and pushes events to the channel.
 func (s *FileSource) readLoop(ctx context.Context) {
 	defer s.wg.Done()
 	defer func() {
@@ -143,7 +168,15 @@ func (s *FileSource) readLoop(ctx context.Context) {
 		}
 	}()
 
-	// Resolve file list
+	// HTTP/HTTPS URL — fetch and read directly
+	if isURL(s.path) {
+		if err := s.readURL(ctx, s.path); err != nil {
+			fmt.Fprintf(os.Stderr, "[file] error reading %s: %v\n", s.path, err)
+		}
+		return
+	}
+
+	// Resolve local file list
 	var files []string
 	if strings.ContainsAny(s.path, "*?[") {
 		matches, err := filepath.Glob(s.path)
@@ -186,6 +219,35 @@ func (s *FileSource) readFile(ctx context.Context, filePath string) error {
 		return fmt.Errorf("parquet support requires apache/parquet-go (use jsonl or csv)")
 	default: // jsonl, ndjson
 		return s.readJSONL(ctx, f, filePath)
+	}
+}
+
+// readURL fetches data from an HTTP/HTTPS URL and reads it using the
+// appropriate format reader (json, csv, jsonl). The response body is
+// streamed directly to the reader — no temp file is created.
+func (s *FileSource) readURL(ctx context.Context, url string) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return fmt.Errorf("create request: %w", err)
+	}
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("fetch url: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= 400 {
+		return fmt.Errorf("url returned HTTP %d", resp.StatusCode)
+	}
+
+	switch s.format {
+	case "csv":
+		return s.readCSV(ctx, resp.Body, url)
+	case "json":
+		return s.readJSON(ctx, resp.Body, url)
+	default: // jsonl, ndjson
+		return s.readJSONL(ctx, resp.Body, url)
 	}
 }
 

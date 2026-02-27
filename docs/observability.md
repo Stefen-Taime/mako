@@ -49,7 +49,7 @@ readinessProbe:
 
 ## Schema Enforcement
 
-Validate events against Confluent Schema Registry at runtime.
+Validate events against Confluent Schema Registry at runtime. Supports **JSON Schema** and **Avro** schema types.
 
 ```yaml
 schema:
@@ -61,11 +61,42 @@ schema:
   dlqTopic: events.orders.dlq
 ```
 
-Features:
-- JSON Schema validation with type checking
+### JSON Schema
+
+- Type checking (string, number, integer, boolean, object, array, null)
 - Required fields enforcement
+- `additionalProperties: false` support
+
+### Avro
+
+Powered by [hamba/avro](https://github.com/hamba/avro) (pure Go, high performance).
+
+- Full record validation (field types, required fields, defaults)
+- Numeric type coercion (JSON `float64` -> Avro `int`, `long`, `float`)
+- Union types (`["null", "string"]`)
+- Nested records and arrays
+- Enum validation
+
+Example Avro schema in the registry:
+
+```json
+{
+  "type": "record",
+  "name": "OrderEvent",
+  "fields": [
+    {"name": "order_id", "type": "string"},
+    {"name": "amount", "type": "double"},
+    {"name": "quantity", "type": "int"},
+    {"name": "status", "type": ["null", "string"], "default": null}
+  ]
+}
+```
+
+### Common features
+
 - Schema caching (fetched once, refreshable)
 - Failed events routed to DLQ or rejected
+- Automatic schema type detection from Registry (`schemaType` field)
 
 ## Fault Isolation
 
