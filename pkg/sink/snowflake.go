@@ -174,7 +174,8 @@ func (s *SnowflakeSink) Open(ctx context.Context) error {
 
 // Write inserts events into Snowflake using batch INSERT with PARSE_JSON.
 // Snowflake uses ? as parameter placeholder (not $N like PostgreSQL).
-// Events are inserted in a single transaction for atomicity.
+// Large batches are split into chunks of 100 to avoid driver timeouts on
+// long-running transactions.
 func (s *SnowflakeSink) Write(ctx context.Context, events []*pipeline.Event) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -183,24 +184,40 @@ func (s *SnowflakeSink) Write(ctx context.Context, events []*pipeline.Event) err
 		return nil
 	}
 
+	qualifiedTable := fmt.Sprintf("%s.%s.%s", s.database, s.schema, s.table)
+	query := fmt.Sprintf(
+		"INSERT INTO %s (event_data, event_key, event_topic, event_offset) SELECT PARSE_JSON(?), ?, ?, ?",
+		qualifiedTable,
+	)
+
+	// Split into chunks to avoid driver timeout on large batches.
+	const chunkSize = 100
+	for i := 0; i < len(events); i += chunkSize {
+		end := i + chunkSize
+		if end > len(events) {
+			end = len(events)
+		}
+		if err := s.writeChunk(query, events[i:end]); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+// writeChunk inserts a single chunk of events inside its own transaction.
+func (s *SnowflakeSink) writeChunk(query string, events []*pipeline.Event) error {
 	// Use context.Background() so writes are not tied to the pipeline context.
 	// The pipeline ctx may already be cancelled (file source EOF + auto-terminate)
 	// by the time the final flush happens, which would corrupt the connection pool.
 	writeCtx, writeCancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer writeCancel()
 
-	qualifiedTable := fmt.Sprintf("%s.%s.%s", s.database, s.schema, s.table)
-
 	tx, err := s.db.BeginTx(writeCtx, nil)
 	if err != nil {
 		return fmt.Errorf("snowflake begin tx: %w", err)
 	}
 	defer tx.Rollback()
-
-	query := fmt.Sprintf(
-		"INSERT INTO %s (event_data, event_key, event_topic, event_offset) SELECT PARSE_JSON(?), ?, ?, ?",
-		qualifiedTable,
-	)
 
 	stmt, err := tx.PrepareContext(writeCtx, query)
 	if err != nil {
