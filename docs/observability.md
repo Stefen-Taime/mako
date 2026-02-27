@@ -173,6 +173,72 @@ Messages are posted as "Mako Pipeline" with a :shark: emoji.
      slackWebhookURL: https://hooks.slack.com/services/T00/B00/xxx
    ```
 
+## Alert Rules
+
+Define threshold-based alert rules in the `monitoring.alerts` section. Rules are evaluated every 10 seconds and trigger Slack notifications when a threshold is breached. Each rule has a 5-minute cooldown to prevent notification spam.
+
+```yaml
+monitoring:
+  freshnessSLA: 5m
+  alertChannel: "#data-alerts"
+  slackWebhookURL: ${SLACK_WEBHOOK_URL}
+  alerts:
+    - name: payment_latency
+      type: latency
+      threshold: 30s
+      severity: critical
+      channel: "#fraud-incidents"     # override alertChannel
+
+    - name: high_error_rate
+      type: error_rate
+      threshold: "0.5%"
+      severity: critical
+
+    - name: volume_drop
+      type: volume
+      threshold: "-50%"
+      severity: warning
+```
+
+### Rule types
+
+| Type | Threshold format | Trigger condition | Example |
+|---|---|---|---|
+| `latency` | Duration (`30s`, `5m`) | Time since last event exceeds threshold | `threshold: 30s` |
+| `error_rate` | Percentage (`0.5%`, `1%`) | `errors / eventsIn` exceeds threshold | `threshold: "0.5%"` |
+| `volume` | Signed percentage (`-50%`, `+200%`) | Throughput rate change exceeds threshold | `threshold: "-50%"` |
+
+**Latency** measures the time since the last event was received. If no events arrive for longer than the threshold, the rule fires. This is useful for detecting stale data or source failures.
+
+**Error rate** computes `errors / eventsIn` as a percentage. A threshold of `"0.5%"` triggers when more than 0.5% of ingested events result in errors.
+
+**Volume** compares the current event throughput to the previous measurement interval. A threshold of `"-50%"` triggers when the event rate drops by more than 50%. A threshold of `"+200%"` triggers when the rate increases by more than 200% (useful for detecting traffic spikes).
+
+### Severity and colors
+
+| Severity | Slack color | Use case |
+|---|---|---|
+| `critical` | Red (`#dc3545`) | Immediate attention required |
+| `warning` | Orange (`#fd7e14`) | Degraded performance, investigate soon |
+| `info` | Blue (`#2196F3`) | Informational, no action needed |
+
+### Cooldown
+
+Each rule has a 5-minute cooldown after firing. During the cooldown period, the rule is still evaluated but won't send duplicate notifications. This prevents notification flooding during sustained threshold breaches.
+
+### Channel override
+
+Each rule can specify its own `channel` field to override the default `alertChannel`. This is useful for routing critical alerts to incident channels while keeping informational alerts in a general channel.
+
+### Evaluation
+
+Rules are evaluated every 10 seconds (not every 500ms like metrics sync) to avoid excessive API calls and computation. Rule triggers are logged to stderr:
+
+```text
+[alert] rule "payment_latency" triggered: latency 45s exceeds threshold 30s
+[alert] rule "high_error_rate" triggered: error rate 1.20% exceeds threshold 0.50% (12 errors / 1000 events)
+```
+
 ## Fault Isolation
 
 Each pipeline runs independently. Failed events go to a Dead Letter Queue instead of blocking the pipeline.

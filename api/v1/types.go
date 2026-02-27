@@ -235,7 +235,7 @@ type MonitoringSpec struct {
 	FreshnessSLA  string            `yaml:"freshnessSLA,omitempty" json:"freshnessSLA,omitempty"` // 5m, 1h
 	AlertChannel  string            `yaml:"alertChannel,omitempty" json:"alertChannel,omitempty"` // Slack channel
 	Metrics       *MetricsSpec      `yaml:"metrics,omitempty" json:"metrics,omitempty"`
-	Alerts        []AlertSpec       `yaml:"alerts,omitempty" json:"alerts,omitempty"`
+	Alerts        []AlertRule       `yaml:"alerts,omitempty" json:"alerts,omitempty"`
 	Labels        map[string]string `yaml:"labels,omitempty" json:"labels,omitempty"`
 
 	// Slack alerting
@@ -251,12 +251,13 @@ type MetricsSpec struct {
 	Port     int    `yaml:"port,omitempty" json:"port,omitempty"`
 }
 
-type AlertSpec struct {
+// AlertRule defines a threshold-based alert.
+type AlertRule struct {
 	Name      string `yaml:"name" json:"name"`
-	Type      string `yaml:"type" json:"type"`     // freshness|volume|error_rate|latency
-	Threshold string `yaml:"threshold" json:"threshold"`
-	Severity  string `yaml:"severity" json:"severity"` // info|warning|critical
-	Channel   string `yaml:"channel,omitempty" json:"channel,omitempty"`
+	Type      string `yaml:"type" json:"type"`                             // latency|error_rate|volume
+	Threshold string `yaml:"threshold" json:"threshold"`                   // "30s", "0.5%", "-50%"
+	Severity  string `yaml:"severity,omitempty" json:"severity,omitempty"` // critical|warning|info
+	Channel   string `yaml:"channel,omitempty" json:"channel,omitempty"`   // override alertChannel
 }
 
 // ═══════════════════════════════════════════

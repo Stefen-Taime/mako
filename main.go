@@ -554,6 +554,7 @@ func cmdRun(args []string) error {
 	pipe := pipeline.New(p, src, chain, sinks)
 
 	// Configure DLQ if enabled
+	var dlqSink *kafka.Sink
 	if p.Isolation.DLQEnabled {
 		dlqTopic := ""
 		if p.Schema != nil && p.Schema.DLQTopic != "" {
@@ -561,7 +562,10 @@ func cmdRun(args []string) error {
 		} else {
 			dlqTopic = p.Source.Topic + ".dlq"
 		}
-		dlqSink := kafka.NewSink(brokers, dlqTopic)
+		dlqSink = kafka.NewSink(brokers, dlqTopic)
+		if err := dlqSink.Open(context.Background()); err != nil {
+			return fmt.Errorf("open DLQ sink %s: %w", dlqTopic, err)
+		}
 		pipe.SetDLQ(dlqSink)
 		fmt.Fprintf(os.Stderr, "🗑️  DLQ:      %s\n", dlqTopic)
 	}
@@ -638,6 +642,15 @@ func cmdRun(args []string) error {
 		fmt.Fprintf(os.Stderr, "🔔 Slack:    alerts → %s\n", slackAlerter.Channel)
 	}
 
+	// Create rule engine for threshold-based alerts (nil-safe if no rules)
+	var ruleEngine *alerting.RuleEngine
+	if p.Monitoring != nil && len(p.Monitoring.Alerts) > 0 {
+		ruleEngine = alerting.NewRuleEngine(p.Monitoring.Alerts, slackAlerter, p.Name)
+		if ruleEngine != nil {
+			fmt.Fprintf(os.Stderr, "📏 Rules:    %d alert rule(s) configured\n", len(p.Monitoring.Alerts))
+		}
+	}
+
 	fmt.Fprintf(os.Stderr, "🚀 Starting pipeline...\n\n")
 
 	startTime := time.Now()
@@ -680,6 +693,8 @@ func cmdRun(args []string) error {
 		defer ticker.Stop()
 		var slaBreach bool
 		var lastErrorCount int64
+		var lastRuleEval time.Time
+		var prevEventsIn int64
 		for {
 			select {
 			case <-pipe.Done():
@@ -713,6 +728,26 @@ func cmdRun(args []string) error {
 					)
 					lastErrorCount = errCount
 				}
+
+				// Alert rules evaluation (every 10s, not every 500ms)
+				if ruleEngine != nil && time.Since(lastRuleEval) >= 10*time.Second {
+					var lastEventAge time.Duration
+					st := pipe.Status()
+					if st.LastEvent != nil {
+						lastEventAge = time.Since(*st.LastEvent)
+					}
+					snap := alerting.MetricsSnapshot{
+						EventsIn:     pipe.MetricsEventsIn().Load(),
+						EventsOut:    pipe.MetricsEventsOut().Load(),
+						Errors:       pipe.MetricsErrors().Load(),
+						LastEventAge: lastEventAge,
+						PrevEventsIn: prevEventsIn,
+						EvalInterval: time.Since(lastRuleEval),
+					}
+					ruleEngine.Evaluate(ctx, snap)
+					prevEventsIn = snap.EventsIn
+					lastRuleEval = time.Now()
+				}
 			}
 		}
 	}()
@@ -729,6 +764,11 @@ func cmdRun(args []string) error {
 
 	if err := pipe.Stop(); err != nil {
 		return fmt.Errorf("stop pipeline: %w", err)
+	}
+
+	// Close the DLQ sink if it was opened
+	if dlqSink != nil {
+		dlqSink.Close()
 	}
 
 	// Wait for the sync goroutine to finish its final copy

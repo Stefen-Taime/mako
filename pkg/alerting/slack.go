@@ -165,6 +165,42 @@ func (a *SlackAlerter) SendComplete(ctx context.Context, eventsIn, eventsOut, er
 	go a.send(ctx, msg)
 }
 
+// SendRuleAlert sends a threshold-based rule alert to Slack. Runs asynchronously.
+// If channel is non-empty, it overrides the default alertChannel.
+func (a *SlackAlerter) SendRuleAlert(ctx context.Context, ruleName, ruleType, severity, channel, message string, eventsIn, eventsOut, errors int64) {
+	if a == nil {
+		return
+	}
+
+	ch := a.Channel
+	if channel != "" {
+		ch = channel
+	}
+
+	color := colorForSeverity(severity)
+
+	msg := slackMessage{
+		Channel:  ch,
+		Username: "Mako Pipeline",
+		Icon:     ":shark:",
+		Attachments: []slackAttachment{{
+			Color: color,
+			Title: fmt.Sprintf("Alert: %s (%s)", ruleName, severity),
+			Fields: []slackField{
+				{Title: "Type", Value: ruleType, Short: true},
+				{Title: "Pipeline", Value: a.Pipeline, Short: true},
+				{Title: "Message", Value: message, Short: false},
+				{Title: "Events In", Value: fmt.Sprintf("%d", eventsIn), Short: true},
+				{Title: "Events Out", Value: fmt.Sprintf("%d", eventsOut), Short: true},
+				{Title: "Errors", Value: fmt.Sprintf("%d", errors), Short: true},
+			},
+			Timestamp: time.Now().Unix(),
+		}},
+	}
+
+	go a.send(ctx, msg)
+}
+
 // ═══════════════════════════════════════════
 // Internal
 // ═══════════════════════════════════════════
@@ -173,7 +209,22 @@ const (
 	colorRed    = "#dc3545"
 	colorGreen  = "#28a745"
 	colorOrange = "#fd7e14"
+	colorBlue   = "#2196F3"
 )
+
+// colorForSeverity returns the Slack attachment color for a given severity.
+func colorForSeverity(severity string) string {
+	switch severity {
+	case "critical":
+		return colorRed
+	case "warning":
+		return colorOrange
+	case "info":
+		return colorBlue
+	default:
+		return colorOrange
+	}
+}
 
 // slackMessage is the Slack incoming webhook payload.
 type slackMessage struct {

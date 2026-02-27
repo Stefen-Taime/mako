@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -297,6 +298,61 @@ func validateMonitoring(r *ValidationResult, m *v1.MonitoringSpec) {
 		if resolved != "" && !strings.HasPrefix(resolved, "https://") {
 			r.addError("monitoring.slackWebhookURL",
 				"must start with https:// (e.g., https://hooks.slack.com/services/...)")
+		}
+	}
+
+	// Alert rules validation
+	if len(m.Alerts) > 0 && webhookURL == "" {
+		r.addWarning("monitoring.alerts",
+			"alert rules are defined but no Slack webhook configured (rules won't trigger notifications)")
+	}
+
+	validRuleTypes := map[string]bool{"latency": true, "error_rate": true, "volume": true}
+	validSeverities := map[string]bool{"": true, "critical": true, "warning": true, "info": true}
+
+	for i, rule := range m.Alerts {
+		prefix := fmt.Sprintf("monitoring.alerts[%d]", i)
+
+		if rule.Name == "" {
+			r.addError(prefix+".name", "required")
+		}
+		if rule.Type == "" {
+			r.addError(prefix+".type", "required")
+		} else if !validRuleTypes[rule.Type] {
+			r.addError(prefix+".type", fmt.Sprintf("must be latency|error_rate|volume, got %q", rule.Type))
+		}
+		if !validSeverities[rule.Severity] {
+			r.addError(prefix+".severity", fmt.Sprintf("must be critical|warning|info, got %q", rule.Severity))
+		}
+
+		// Type-specific threshold validation
+		if rule.Threshold == "" {
+			r.addError(prefix+".threshold", "required")
+		} else if rule.Type != "" {
+			switch rule.Type {
+			case "latency":
+				if _, err := time.ParseDuration(rule.Threshold); err != nil {
+					r.addError(prefix+".threshold", fmt.Sprintf("invalid duration %q: %v", rule.Threshold, err))
+				}
+			case "error_rate":
+				if !strings.HasSuffix(rule.Threshold, "%") {
+					r.addError(prefix+".threshold", fmt.Sprintf("must be a percentage (e.g., \"0.5%%\"), got %q", rule.Threshold))
+				} else {
+					numStr := strings.TrimSuffix(rule.Threshold, "%")
+					if _, err := strconv.ParseFloat(numStr, 64); err != nil {
+						r.addError(prefix+".threshold", fmt.Sprintf("invalid percentage %q: %v", rule.Threshold, err))
+					}
+				}
+			case "volume":
+				if !strings.HasSuffix(rule.Threshold, "%") {
+					r.addError(prefix+".threshold", fmt.Sprintf("must be a percentage (e.g., \"-50%%\"), got %q", rule.Threshold))
+				} else {
+					numStr := strings.TrimSuffix(rule.Threshold, "%")
+					if _, err := strconv.ParseFloat(numStr, 64); err != nil {
+						r.addError(prefix+".threshold", fmt.Sprintf("invalid percentage %q: %v", rule.Threshold, err))
+					}
+				}
+			}
 		}
 	}
 }
