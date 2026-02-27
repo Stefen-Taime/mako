@@ -55,9 +55,10 @@ type SnowflakeSink struct {
 	mu        sync.Mutex
 
 	// flatten mode state
-	columns    []string        // ordered column names (set on first batch)
-	columnSet  map[string]bool // quick lookup for known columns
-	tableReady bool            // true once CREATE TABLE has been executed
+	columns    []string          // ordered column names (set on first batch)
+	columnSet  map[string]bool   // quick lookup for known columns
+	columnType map[string]string // column name → Snowflake type (VARCHAR, FLOAT, BOOLEAN, VARIANT)
+	tableReady bool              // true once CREATE TABLE has been executed
 }
 
 // NewSnowflakeSink creates a Snowflake sink.
@@ -118,7 +119,8 @@ func NewSnowflakeSink(database, schema, table string, flatten bool, config map[s
 		flatten:   flatten,
 		config:    config,
 		dsn:       dsn,
-		columnSet: make(map[string]bool),
+		columnSet:  make(map[string]bool),
+		columnType: make(map[string]string),
 	}
 }
 
@@ -338,6 +340,7 @@ func (s *SnowflakeSink) ensureFlatTable(events []*pipeline.Event) error {
 		s.columns = colNames
 		for _, k := range colNames {
 			s.columnSet[k] = true
+			s.columnType[k] = sfColumnType(newKeys[k])
 		}
 		fmt.Fprintf(os.Stderr, "[snowflake] created flat table %s with %d columns\n",
 			qualifiedTable, len(colNames))
@@ -354,6 +357,7 @@ func (s *SnowflakeSink) ensureFlatTable(events []*pipeline.Event) error {
 		}
 		s.columns = append(s.columns, k)
 		s.columnSet[k] = true
+		s.columnType[k] = colType
 		added = append(added, k)
 	}
 	if len(added) > 0 {
@@ -400,8 +404,12 @@ func (s *SnowflakeSink) writeFlatChunk(events []*pipeline.Event) error {
 		quotedCols = append(quotedCols, sfQuoteIdent(c))
 	}
 	placeholders := make([]string, len(s.columns))
-	for i := range placeholders {
-		placeholders[i] = "?"
+	for i, c := range s.columns {
+		if s.columnType[c] == "VARIANT" {
+			placeholders[i] = "PARSE_JSON(?)"
+		} else {
+			placeholders[i] = "?"
+		}
 	}
 
 	query := fmt.Sprintf("INSERT INTO %s (%s) VALUES (%s)",
