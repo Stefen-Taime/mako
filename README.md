@@ -19,7 +19,8 @@
   <a href="docs/observability.md">Observability</a> &middot;
   <a href="docs/helm.md">Helm</a> &middot;
   <a href="docs/codegen.md">Codegen</a> &middot;
-  <a href="docs/local-infra.md">Local Infra</a>
+  <a href="docs/local-infra.md">Local Infra</a> &middot;
+  <a href="CONTRIBUTING.md">Contributing</a>
 </p>
 
 ---
