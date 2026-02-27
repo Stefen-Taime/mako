@@ -174,8 +174,9 @@ func (s *SnowflakeSink) Open(ctx context.Context) error {
 
 // Write inserts events into Snowflake using batch INSERT with PARSE_JSON.
 // Snowflake uses ? as parameter placeholder (not $N like PostgreSQL).
-// Large batches are split into chunks of 100 to avoid driver timeouts on
-// long-running transactions.
+// Large batches are split into small chunks so each transaction stays well
+// within the driver timeout. If a chunk fails, the remaining chunks are
+// still attempted and a summary error is returned.
 func (s *SnowflakeSink) Write(ctx context.Context, events []*pipeline.Event) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -190,18 +191,25 @@ func (s *SnowflakeSink) Write(ctx context.Context, events []*pipeline.Event) err
 		qualifiedTable,
 	)
 
-	// Split into chunks to avoid driver timeout on large batches.
-	const chunkSize = 100
+	// Split into small chunks to avoid driver timeout on large batches.
+	const chunkSize = 16
+	var chunkErrors int
+	var lastErr error
 	for i := 0; i < len(events); i += chunkSize {
 		end := i + chunkSize
 		if end > len(events) {
 			end = len(events)
 		}
 		if err := s.writeChunk(query, events[i:end]); err != nil {
-			return err
+			chunkErrors++
+			lastErr = err
+			fmt.Fprintf(os.Stderr, "[snowflake] chunk %d–%d failed: %v\n", i, end, err)
 		}
 	}
 
+	if lastErr != nil {
+		return fmt.Errorf("snowflake write: %d chunk(s) failed, last error: %w", chunkErrors, lastErr)
+	}
 	return nil
 }
 
@@ -210,7 +218,7 @@ func (s *SnowflakeSink) writeChunk(query string, events []*pipeline.Event) error
 	// Use context.Background() so writes are not tied to the pipeline context.
 	// The pipeline ctx may already be cancelled (file source EOF + auto-terminate)
 	// by the time the final flush happens, which would corrupt the connection pool.
-	writeCtx, writeCancel := context.WithTimeout(context.Background(), 60*time.Second)
+	writeCtx, writeCancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer writeCancel()
 
 	tx, err := s.db.BeginTx(writeCtx, nil)
