@@ -628,7 +628,20 @@ func cmdRun(args []string) error {
 
 	fmt.Fprintf(os.Stderr, "🦈 Mako Pipeline Runner v%s\n", cli.Version)
 	fmt.Fprintf(os.Stderr, "📋 Pipeline: %s\n", p.Name)
-	fmt.Fprintf(os.Stderr, "📥 Source:    %s (%s)\n", p.Source.Type, p.Source.Topic)
+	if len(p.Sources) > 0 {
+		fmt.Fprintf(os.Stderr, "📥 Sources:  %d configured\n", len(p.Sources))
+		for _, s := range p.Sources {
+			fmt.Fprintf(os.Stderr, "   ├─ %s (%s)\n", s.Name, s.Type)
+		}
+		if p.Join != nil {
+			fmt.Fprintf(os.Stderr, "🔗 Join:     %s on %s\n", p.Join.Type, p.Join.On)
+			if p.Join.Window != "" {
+				fmt.Fprintf(os.Stderr, "   └─ window: %s\n", p.Join.Window)
+			}
+		}
+	} else {
+		fmt.Fprintf(os.Stderr, "📥 Source:    %s (%s)\n", p.Source.Type, p.Source.Topic)
+	}
 	fmt.Fprintf(os.Stderr, "🔧 Transforms: %d steps\n", chain.Len())
 	fmt.Fprintf(os.Stderr, "📤 Sinks:    %d configured\n", len(sinks))
 	if obsSrv != nil {

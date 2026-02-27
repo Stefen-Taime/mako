@@ -37,7 +37,9 @@ type Pipeline struct {
 	Description string            `yaml:"description,omitempty" json:"description,omitempty"`
 	Labels      map[string]string `yaml:"labels,omitempty" json:"labels,omitempty"`
 	Owner       string            `yaml:"owner,omitempty" json:"owner,omitempty"`
-	Source      Source            `yaml:"source" json:"source"`
+	Source      Source            `yaml:"source,omitempty" json:"source,omitempty"`
+	Sources     []Source          `yaml:"sources,omitempty" json:"sources,omitempty"`
+	Join        *JoinSpec         `yaml:"join,omitempty" json:"join,omitempty"`
 	Transforms  []Transform       `yaml:"transforms,omitempty" json:"transforms,omitempty"`
 	Sink        Sink              `yaml:"sink" json:"sink"`
 	Sinks       []Sink            `yaml:"sinks,omitempty" json:"sinks,omitempty"` // Multi-sink support
@@ -69,6 +71,7 @@ type VaultSpec struct {
 // Kafka is the default event bus. Every event flows through
 // Kafka before any processing.
 type Source struct {
+	Name   string            `yaml:"name,omitempty" json:"name,omitempty"`
 	Type   SourceType        `yaml:"type" json:"type"`
 	Config map[string]any    `yaml:"config,omitempty" json:"config,omitempty"`
 	Labels map[string]string `yaml:"labels,omitempty" json:"labels,omitempty"`
@@ -92,6 +95,13 @@ const (
 	SourcePostgres SourceType = "postgres_cdc"
 	SourceDuckDB   SourceType = "duckdb"
 )
+
+// JoinSpec defines how multiple sources are joined together.
+type JoinSpec struct {
+	Type   string `yaml:"type" json:"type"`                         // inner|left|right|full
+	On     string `yaml:"on" json:"on"`                             // join condition: "orders.customer_id = customers.id"
+	Window string `yaml:"window,omitempty" json:"window,omitempty"` // time window for stream join: 5m, 1h
+}
 
 // ═══════════════════════════════════════════
 // Transform — processing steps

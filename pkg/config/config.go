@@ -120,8 +120,19 @@ func Validate(spec *v1.PipelineSpec) *ValidationResult {
 		result.addError("pipeline.name", "must be lowercase alphanumeric with hyphens (e.g., order-events)")
 	}
 
-	// Source
-	validateSource(result, &p.Source)
+	// Sources validation
+	hasSources := len(p.Sources) > 0
+	hasSource := p.Source.Type != ""
+
+	if hasSources && hasSource {
+		result.addError("pipeline", "cannot define both source and sources")
+	} else if hasSources {
+		validateSources(result, p.Sources, p.Join)
+	} else if hasSource {
+		validateSource(result, &p.Source)
+	} else {
+		result.addError("pipeline.source", "required (define source or sources)")
+	}
 
 	// Transforms
 	for i, t := range p.Transforms {
@@ -164,6 +175,10 @@ func Validate(spec *v1.PipelineSpec) *ValidationResult {
 }
 
 func validateSource(r *ValidationResult, s *v1.Source) {
+	validateSourceAt(r, s, "source")
+}
+
+func validateSourceAt(r *ValidationResult, s *v1.Source, prefix string) {
 	validTypes := map[v1.SourceType]bool{
 		v1.SourceKafka: true, v1.SourceHTTP: true,
 		v1.SourceFile: true, v1.SourcePostgres: true,
@@ -171,13 +186,56 @@ func validateSource(r *ValidationResult, s *v1.Source) {
 	}
 
 	if s.Type == "" {
-		r.addError("source.type", "required")
+		r.addError(prefix+".type", "required")
 	} else if !validTypes[s.Type] {
-		r.addError("source.type", fmt.Sprintf("unsupported type %q", s.Type))
+		r.addError(prefix+".type", fmt.Sprintf("unsupported type %q", s.Type))
 	}
 
 	if s.Type == v1.SourceKafka && s.Topic == "" {
-		r.addError("source.topic", "required for kafka source")
+		r.addError(prefix+".topic", "required for kafka source")
+	}
+}
+
+func validateSources(r *ValidationResult, sources []v1.Source, join *v1.JoinSpec) {
+	if len(sources) == 1 {
+		r.addWarning("pipeline.sources", "single source in sources array, use source instead")
+	}
+
+	// Each source must have a unique Name
+	names := make(map[string]bool, len(sources))
+	for i, s := range sources {
+		prefix := fmt.Sprintf("pipeline.sources[%d]", i)
+		if s.Name == "" {
+			r.addError(prefix+".name", "required when using sources array")
+		} else if names[s.Name] {
+			r.addError(prefix+".name", fmt.Sprintf("duplicate source name %q", s.Name))
+		} else {
+			names[s.Name] = true
+		}
+		validateSourceAt(r, &s, prefix)
+	}
+
+	// Join is required when 2+ sources
+	if len(sources) >= 2 {
+		if join == nil {
+			r.addError("pipeline.join", "required when multiple sources are defined")
+		} else {
+			validateJoin(r, join)
+		}
+	}
+}
+
+func validateJoin(r *ValidationResult, j *v1.JoinSpec) {
+	validTypes := map[string]bool{
+		"inner": true, "left": true, "right": true, "full": true,
+	}
+	if j.Type == "" {
+		r.addError("pipeline.join.type", "required (inner|left|right|full)")
+	} else if !validTypes[j.Type] {
+		r.addError("pipeline.join.type", fmt.Sprintf("must be inner|left|right|full, got %q", j.Type))
+	}
+	if j.On == "" {
+		r.addError("pipeline.join.on", "required (e.g., \"orders.customer_id = customers.id\")")
 	}
 }
 
@@ -371,13 +429,29 @@ func applyDefaults(spec *v1.PipelineSpec) {
 
 	p := &spec.Pipeline
 
-	// Source defaults
+	// Source defaults (single source)
 	if p.Source.Type == v1.SourceKafka {
 		if p.Source.ConsumerGroup == "" {
 			p.Source.ConsumerGroup = "mako-" + p.Name
 		}
 		if p.Source.StartOffset == "" {
 			p.Source.StartOffset = "latest"
+		}
+	}
+
+	// Sources defaults (multi-source)
+	for i := range p.Sources {
+		if p.Sources[i].Type == v1.SourceKafka {
+			if p.Sources[i].ConsumerGroup == "" {
+				suffix := p.Sources[i].Name
+				if suffix == "" {
+					suffix = fmt.Sprintf("%d", i)
+				}
+				p.Sources[i].ConsumerGroup = "mako-" + p.Name + "-" + suffix
+			}
+			if p.Sources[i].StartOffset == "" {
+				p.Sources[i].StartOffset = "latest"
+			}
 		}
 	}
 
