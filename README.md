@@ -210,9 +210,13 @@ mako/
 │   ├── snowflake/                  # Snowflake flatten examples
 │   │   ├── pipeline-movies.yaml
 │   │   └── pipeline-users.yaml
-│   └── wasm-plugin/                # WASM plugin example (Go/TinyGo)
-│       ├── main.go
-│       └── pipeline.yaml
+│   ├── wasm-plugin/                # WASM plugin example (TinyGo) — STANDBY
+│   │   ├── main.go
+│   │   └── pipeline.yaml
+│   └── wasm-plugin-rust/           # WASM plugin example (Rust) — recommended
+│       ├── Cargo.toml
+│       ├── src/lib.rs
+│       └── README.md
 └── test/fixtures/events.jsonl
 ```
 
@@ -265,6 +269,10 @@ go test -bench=. -benchmem ./...
 - [x] HashiCorp Vault integration (secret resolution chain)
 - [x] PostgreSQL CDC source (snapshot, cdc, snapshot+cdc)
 - [x] HTTP/API source (pagination, OAuth2, rate limiting, retries)
+- [x] Real-time observability metrics (500ms sync, sink latency)
+- [x] OAuth2 JSON content type support for HTTP source
+- [x] Rust WASM plugin example (recommended language for plugins)
+- [x] WASM runtime hardening (skip `_start` for library-style plugins)
 
 ---
 

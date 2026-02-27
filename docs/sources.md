@@ -177,7 +177,7 @@ source:
 | `bearer` | `auth_token` | `Authorization: Bearer <token>` header |
 | `basic` | `auth_user`, `auth_password` | HTTP Basic Auth (base64 encoded) |
 | `api_key` | `api_key_header`, `api_key_value` | Custom header (e.g., `X-API-Key`) |
-| `oauth2` | `oauth2_token_url`, `oauth2_client_id`, `oauth2_client_secret` | Client credentials grant with automatic token refresh |
+| `oauth2` | `oauth2_token_url`, `oauth2_client_id`, `oauth2_client_secret`, `oauth2_content_type` | Client credentials grant with automatic token refresh |
 
 ### Response parsing
 
@@ -208,6 +208,26 @@ source:
 - Retries with exponential backoff (1s, 2s, 4s, ...):
   - **Retry:** `429 Too Many Requests`, `5xx` server errors
   - **No retry:** `4xx` client errors (400, 401, 403, 404)
+
+### OAuth2 content type
+
+By default, token requests use `application/x-www-form-urlencoded` (RFC 6749 standard). Some APIs require `application/json` instead. Use `oauth2_content_type` to switch:
+
+| Value | Content-Type | Body format |
+|---|---|---|
+| `form` (default) | `application/x-www-form-urlencoded` | `grant_type=client_credentials&client_id=...` |
+| `json` | `application/json` | `{"grant_type":"client_credentials","client_id":"..."}` |
+
+```yaml
+source:
+  type: http
+  config:
+    auth_type: oauth2
+    oauth2_token_url: http://api.example.com/oauth2/token
+    oauth2_client_id: ${CLIENT_ID}
+    oauth2_client_secret: ${CLIENT_SECRET}
+    oauth2_content_type: json    # send token request as JSON
+```
 
 ### Example: paginated API with OAuth2
 

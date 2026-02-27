@@ -114,7 +114,9 @@ mako/
 │   └── codegen/             # K8s + Terraform generators
 ├── docker/                  # Local infra (docker-compose)
 ├── docs/                    # Documentation
-└── examples/                # Example pipelines
+├── examples/                # Example pipelines + WASM plugin examples
+│   ├── wasm-plugin/         # TinyGo WASM plugin (standby)
+│   └── wasm-plugin-rust/    # Rust WASM plugin (recommended)
 ```
 
 ## Adding a New Source

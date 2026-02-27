@@ -28,10 +28,15 @@ mako_events_out_total{pipeline="order-events"} 15230
 mako_errors_total{pipeline="order-events"} 4
 mako_dlq_total{pipeline="order-events"} 2
 mako_schema_failures_total{pipeline="order-events"} 1
+mako_sink_latency_microseconds{pipeline="order-events"} 4523
 mako_throughput_events_per_second{pipeline="order-events"} 1523.40
 mako_uptime_seconds{pipeline="order-events"} 3600.0
 mako_pipeline_ready{pipeline="order-events"} 1
 ```
+
+### Real-time metrics
+
+Metrics are synced from the pipeline engine to the observability server every 500ms. The `/metrics` and `/status` endpoints reflect live counters during pipeline execution, not just final stats at shutdown. A final sync is performed after `pipeline.Stop()` to capture events flushed during graceful shutdown.
 
 ## Kubernetes Probes
 
