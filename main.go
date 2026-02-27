@@ -523,8 +523,10 @@ func cmdRun(args []string) error {
 		src = source.NewPostgresCDCSource(p.Source.Config)
 	case "http":
 		src = source.NewHTTPSource(p.Source.Config)
+	case "duckdb":
+		src = source.NewDuckDBSource(p.Source.Config)
 	default:
-		return fmt.Errorf("unsupported source type for run: %s (supported: kafka, file, postgres_cdc, http)", p.Source.Type)
+		return fmt.Errorf("unsupported source type for run: %s (supported: kafka, file, postgres_cdc, http, duckdb)", p.Source.Type)
 	}
 
 	// Build sinks

@@ -136,6 +136,8 @@ func BuildFromSpec(spec v1.Sink) (pipeline.Sink, error) {
 		return NewGCSSink(spec.Bucket, spec.Prefix, spec.Format, spec.Config), nil
 	case v1.SinkClickHouse:
 		return NewClickHouseSink(spec.Database, spec.Table, spec.Flatten, spec.Config), nil
+	case v1.SinkDuckDB:
+		return NewDuckDBSink(spec.Database, spec.Table, spec.Config), nil
 	default:
 		return nil, fmt.Errorf("unsupported sink type: %s", spec.Type)
 	}

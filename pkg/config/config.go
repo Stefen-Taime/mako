@@ -166,6 +166,7 @@ func validateSource(r *ValidationResult, s *v1.Source) {
 	validTypes := map[v1.SourceType]bool{
 		v1.SourceKafka: true, v1.SourceHTTP: true,
 		v1.SourceFile: true, v1.SourcePostgres: true,
+		v1.SourceDuckDB: true,
 	}
 
 	if s.Type == "" {
@@ -238,7 +239,7 @@ func validateSink(r *ValidationResult, s *v1.Sink, prefix string) {
 	validTypes := map[v1.SinkType]bool{
 		v1.SinkSnowflake: true, v1.SinkBigQuery: true, v1.SinkPostgres: true,
 		v1.SinkKafka: true, v1.SinkS3: true, v1.SinkGCS: true,
-		v1.SinkClickHouse: true, v1.SinkStdout: true,
+		v1.SinkClickHouse: true, v1.SinkDuckDB: true, v1.SinkStdout: true,
 	}
 
 	if !validTypes[s.Type] {
@@ -246,7 +247,7 @@ func validateSink(r *ValidationResult, s *v1.Sink, prefix string) {
 	}
 
 	switch s.Type {
-	case v1.SinkSnowflake, v1.SinkBigQuery, v1.SinkPostgres, v1.SinkClickHouse:
+	case v1.SinkSnowflake, v1.SinkBigQuery, v1.SinkPostgres, v1.SinkClickHouse, v1.SinkDuckDB:
 		if s.Table == "" {
 			r.addError(prefix+".table", "required for warehouse sink")
 		}

@@ -90,6 +90,7 @@ const (
 	SourceHTTP     SourceType = "http"
 	SourceFile     SourceType = "file"
 	SourcePostgres SourceType = "postgres_cdc"
+	SourceDuckDB   SourceType = "duckdb"
 )
 
 // ═══════════════════════════════════════════
@@ -188,6 +189,7 @@ const (
 	SinkS3         SinkType = "s3"
 	SinkGCS        SinkType = "gcs"
 	SinkClickHouse SinkType = "clickhouse"
+	SinkDuckDB     SinkType = "duckdb"
 	SinkStdout     SinkType = "stdout" // For debugging
 )
 
