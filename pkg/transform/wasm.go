@@ -116,6 +116,7 @@ func (wt *WASMTransform) getInstance(ctx context.Context) (*wasmInstance, error)
 	cfg := wazero.NewModuleConfig().
 		WithStdout(os.Stdout).
 		WithStderr(os.Stderr).
+		WithStartFunctions(). // Don't call _start — plugins only need exports (alloc/transform)
 		WithName("")
 	wt.mu.Unlock()
 
