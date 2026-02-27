@@ -571,6 +571,13 @@ func TestWASMTransformMissingFile(t *testing.T) {
 	}
 }
 
+// To test with the Rust plugin:
+//   cd examples/wasm-plugin-rust
+//   cargo build --target wasm32-wasip1 --release
+//   cp target/wasm32-wasip1/release/mako_plugin_rust.wasm plugin.wasm
+//
+// Then use: NewWASMTransform("examples/wasm-plugin-rust/plugin.wasm", "transform")
+
 func TestWASMTransformMissingPath(t *testing.T) {
 	specs := []v1.Transform{
 		{
