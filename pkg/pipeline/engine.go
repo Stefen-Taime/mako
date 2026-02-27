@@ -8,6 +8,7 @@ package pipeline
 import (
 	"context"
 	"fmt"
+	"log"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -159,14 +160,19 @@ func (p *Pipeline) eventLoop(ctx context.Context, eventCh <-chan *Event, batchSi
 		if len(batch) == 0 {
 			return
 		}
+		anyFailed := false
 		for _, sink := range p.sinks {
 			if err := sink.Write(writeCtx, batch); err != nil {
+				log.Printf("[pipeline] sink %s write error: %v", sink.Name(), err)
 				p.errors.Add(1)
 				p.handleError(writeCtx, err, batch)
+				anyFailed = true
 				continue
 			}
 		}
-		p.eventsOut.Add(int64(len(batch)))
+		if !anyFailed {
+			p.eventsOut.Add(int64(len(batch)))
+		}
 		batch = batch[:0]
 	}
 

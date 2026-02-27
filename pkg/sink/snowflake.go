@@ -8,6 +8,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/Stefen-Taime/mako/pkg/pipeline"
 
@@ -129,17 +130,36 @@ func (s *SnowflakeSink) Open(ctx context.Context) error {
 	db.SetMaxOpenConns(10)
 	db.SetMaxIdleConns(5)
 
-	if err := db.PingContext(ctx); err != nil {
+	// Use a dedicated timeout for Snowflake init operations (ping, USE WAREHOUSE,
+	// CREATE TABLE) because the initial connection can be slow.
+	initCtx, initCancel := context.WithTimeout(ctx, 30*time.Second)
+	defer initCancel()
+
+	if err := db.PingContext(initCtx); err != nil {
 		db.Close()
 		return fmt.Errorf("snowflake ping: %w", err)
 	}
 
 	// Set warehouse context if specified
 	if s.warehouse != "" {
-		if _, err := db.ExecContext(ctx, fmt.Sprintf("USE WAREHOUSE %s", s.warehouse)); err != nil {
+		if _, err := db.ExecContext(initCtx, fmt.Sprintf("USE WAREHOUSE %s", s.warehouse)); err != nil {
 			// Non-fatal: warehouse might be set in the DSN
 			fmt.Fprintf(os.Stderr, "[snowflake] warning: USE WAREHOUSE failed: %v\n", err)
 		}
+	}
+
+	// Auto-create the target table if it does not exist.
+	qualifiedTable := fmt.Sprintf("%s.%s.%s", s.database, s.schema, s.table)
+	createDDL := fmt.Sprintf(`CREATE TABLE IF NOT EXISTS %s (
+		event_data    VARIANT NOT NULL,
+		event_key     VARCHAR,
+		event_topic   VARCHAR,
+		event_offset  NUMBER,
+		loaded_at     TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP()
+	)`, qualifiedTable)
+	if _, err := db.ExecContext(initCtx, createDDL); err != nil {
+		db.Close()
+		return fmt.Errorf("snowflake create table: %w", err)
 	}
 
 	s.db = db
