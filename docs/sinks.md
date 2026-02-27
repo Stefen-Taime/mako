@@ -296,6 +296,91 @@ Type mapping:
 
 Schema evolution is handled automatically via `ALTER TABLE ADD COLUMN IF NOT EXISTS`.
 
+## DuckDB (embedded)
+
+Embedded analytical sink using [go-duckdb](https://github.com/marcboeker/go-duckdb) (CGO, embeds DuckDB). Supports auto-table creation with typed columns, schema evolution, and native export to Parquet/CSV/JSON via DuckDB's `COPY` command.
+
+```yaml
+sink:
+  type: duckdb
+  database: /data/output.duckdb    # ":memory:" by default
+  table: events
+  config:
+    create_table: true              # auto-create table (default: true)
+```
+
+### Configuration
+
+| Key | Default | Description |
+|---|---|---|
+| `database` (YAML field) | — | DuckDB database path (also accepts `config.database`) |
+| `table` (YAML field) | — | Target table name (required) |
+| `create_table` | `true` | Auto-create table from first batch with typed columns |
+| `export_path` | — | Path to export data at pipeline close (local, `s3://`, `gs://`) |
+| `export_format` | `parquet` | Export format: `parquet`, `csv`, `json` |
+| `export_partition_by` | — | List of columns for Hive-style partitioned export |
+
+### Auto-table creation
+
+With `create_table: true` (default), the table is created from the first batch of events. Each top-level key becomes a typed column:
+
+| Go type | DuckDB type |
+|---|---|
+| `string` | `VARCHAR` |
+| `float64` | `DOUBLE` |
+| `int` / `int64` | `BIGINT` |
+| `bool` | `BOOLEAN` |
+| `time.Time`-like string | `TIMESTAMP` |
+| `map` / `array` (nested) | `JSON` |
+
+A `loaded_at TIMESTAMP DEFAULT current_timestamp` column is added automatically.
+
+Schema evolution is handled automatically: new keys in later batches trigger `ALTER TABLE ADD COLUMN IF NOT EXISTS`.
+
+### Export at close
+
+When `export_path` is configured, the sink runs a `COPY <table> TO '<path>'` command at pipeline close. This is useful for ETL patterns where you load into an in-memory DuckDB, then export the result.
+
+```yaml
+sink:
+  type: duckdb
+  database: ":memory:"
+  table: export_staging
+  config:
+    create_table: true
+    export_path: /data/output/events/
+    export_format: parquet
+    export_partition_by: [year, month]
+```
+
+The generated SQL:
+```sql
+COPY "export_staging" TO '/data/output/events/' (FORMAT PARQUET, PARTITION_BY (year, month))
+```
+
+For remote paths (`s3://`, `gs://`), the `httpfs` extension is loaded automatically at `Open()`.
+
+### Example: DuckDB query to partitioned Parquet
+
+```yaml
+pipeline:
+  name: duckdb-export-parquet
+  source:
+    type: duckdb
+    config:
+      database: /data/analytics.duckdb
+      query: "SELECT *, year(created_at) as year, month(created_at) as month FROM events"
+  sink:
+    type: duckdb
+    database: ":memory:"
+    table: export_staging
+    config:
+      create_table: true
+      export_path: /data/output/events/
+      export_format: parquet
+      export_partition_by: [year, month]
+```
+
 ## Secret Resolution (Vault)
 
 All sinks resolve credentials through a 4-step chain:
@@ -357,4 +442,4 @@ sinks:
     topic: events.orders.enriched
 ```
 
-**All sinks:** stdout, file, PostgreSQL, Snowflake, BigQuery, ClickHouse, S3, GCS, Kafka.
+**All sinks:** stdout, file, PostgreSQL, Snowflake, BigQuery, ClickHouse, DuckDB, S3, GCS, Kafka.

@@ -103,8 +103,8 @@ mako/
 ├── main.go                  # CLI entry point
 ├── main_test.go             # All tests
 ├── pkg/
-│   ├── source/              # Sources: file, postgres_cdc, http
-│   ├── sink/                # Sinks: postgres, snowflake, bigquery, clickhouse, s3, gcs
+│   ├── source/              # Sources: file, postgres_cdc, http, duckdb
+│   ├── sink/                # Sinks: postgres, snowflake, bigquery, clickhouse, duckdb, s3, gcs
 │   ├── pipeline/            # Runtime engine
 │   ├── transform/           # Transform implementations + WASM
 │   ├── kafka/               # Kafka source + sink
@@ -115,6 +115,7 @@ mako/
 ├── docker/                  # Local infra (docker-compose)
 ├── docs/                    # Documentation
 ├── examples/                # Example pipelines + WASM plugin examples
+│   ├── duckdb/              # DuckDB pipeline examples
 │   ├── wasm-plugin/         # TinyGo WASM plugin (standby)
 │   └── wasm-plugin-rust/    # Rust WASM plugin (recommended)
 ```

@@ -249,3 +249,79 @@ source:
     rate_limit_rps: 5
     poll_interval: 15m
 ```
+
+## DuckDB (embedded)
+
+Embedded analytical source using [go-duckdb](https://github.com/marcboeker/go-duckdb) (CGO, embeds DuckDB). Reads data via SQL queries — including DuckDB's native Parquet, CSV, and JSON file readers.
+
+```yaml
+source:
+  type: duckdb
+  config:
+    database: /data/analytics.duckdb   # ":memory:" by default
+    query: "SELECT * FROM read_parquet('/data/*.parquet')"
+    batch_size: 10000                   # rows per batch (default: 10000)
+```
+
+### Configuration
+
+| Key | Default | Description |
+|---|---|---|
+| `database` | `:memory:` | Path to DuckDB database file, or `:memory:` for in-memory |
+| `query` | — | SQL query to execute (supports DuckDB functions like `read_parquet`, `read_csv`, `read_json`) |
+| `table` | — | Table name (shorthand for `SELECT * FROM <table>`). Either `query` or `table` is required |
+| `batch_size` | `10000` | Number of rows buffered in the event channel |
+
+### Native file reading
+
+DuckDB can read external files directly via SQL — no separate file source needed:
+
+```yaml
+# Read Parquet files (local or S3)
+query: "SELECT * FROM read_parquet('/data/*.parquet')"
+query: "SELECT * FROM read_parquet('s3://bucket/path/*.parquet')"
+
+# Read CSV files
+query: "SELECT * FROM read_csv('/data/events.csv', header=true)"
+
+# Read JSON files
+query: "SELECT * FROM read_json('/data/events.json')"
+
+# Analytical queries with DuckDB SQL
+query: "SELECT user_id, count(*) as cnt, sum(amount) as total FROM read_parquet('/data/*.parquet') GROUP BY user_id"
+```
+
+### Auto-termination
+
+When the query finishes reading all rows, the pipeline shuts down automatically (same behavior as the file source).
+
+### Type conversion
+
+DuckDB column types are automatically converted to JSON-friendly Go types:
+
+| DuckDB type | Go type |
+|---|---|
+| `VARCHAR`, `TEXT` | `string` |
+| `INTEGER`, `BIGINT`, `SMALLINT`, `TINYINT` | `int64` |
+| `DOUBLE`, `FLOAT`, `REAL` | `float64` |
+| `BOOLEAN` | `bool` |
+| `TIMESTAMP`, `DATE`, `TIME` | `string` (RFC 3339) |
+| `LIST`, `STRUCT`, `MAP` | parsed JSON (via `[]byte` unmarshalling) |
+
+### Example: Parquet to DuckDB
+
+```yaml
+pipeline:
+  name: parquet-to-duckdb
+  source:
+    type: duckdb
+    config:
+      query: "SELECT * FROM read_parquet('/data/*.parquet')"
+      batch_size: 10000
+  sink:
+    type: duckdb
+    database: /data/analytics.duckdb
+    table: events
+    config:
+      create_table: true
+```

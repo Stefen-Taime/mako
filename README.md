@@ -68,9 +68,9 @@ mako generate pipeline.yaml --tf > infra.tf
 
 | Concept | Mako |
 |---|---|
-| Sources | Kafka, File, PostgreSQL CDC, HTTP/API — [docs](docs/sources.md) |
+| Sources | Kafka, File, PostgreSQL CDC, HTTP/API, DuckDB — [docs](docs/sources.md) |
 | Transforms | hash, mask, filter, rename, dedupe + WASM plugins — [docs](docs/transforms.md) |
-| Sinks | PostgreSQL, Snowflake, BigQuery, ClickHouse, S3, GCS, Kafka — [docs](docs/sinks.md) |
+| Sinks | PostgreSQL, Snowflake, BigQuery, ClickHouse, DuckDB, S3, GCS, Kafka — [docs](docs/sinks.md) |
 | Schema | Confluent Schema Registry (JSON Schema + Avro) — [docs](docs/observability.md#schema-enforcement) |
 | Observability | Prometheus /metrics, /health, /ready, /status — [docs](docs/observability.md) |
 | Deploy | Helm chart, `mako generate --k8s` + `--tf` — [helm](docs/helm.md) / [codegen](docs/codegen.md) |
@@ -140,7 +140,8 @@ pipeline.yaml
   |  (File)     mask_fields       Snowflake  |
   |  (PG CDC)   filter            BigQuery   |
   |  (HTTP)     rename            ClickHouse |
-  |             deduplicate       S3 / GCS   |
+  |  (DuckDB)   deduplicate       DuckDB     |
+  |             sql               S3 / GCS   |
   |             wasm_plugin       Kafka      |
   |                               Stdout     |
   |                                          |
@@ -167,7 +168,8 @@ mako/
 │   ├── source/
 │   │   ├── file.go                 # File source (JSONL, CSV, JSON)
 │   │   ├── postgres_cdc.go         # PostgreSQL CDC source (pgx + pglogrepl)
-│   │   └── http.go                 # HTTP/API source (REST, pagination, OAuth2)
+│   │   ├── http.go                 # HTTP/API source (REST, pagination, OAuth2)
+│   │   └── duckdb.go              # DuckDB source (SQL, Parquet/CSV/JSON reading)
 │   ├── sink/
 │   │   ├── sink.go                 # Stdout, File sinks + BuildFromSpec
 │   │   ├── postgres.go             # PostgreSQL sink (pgx)
@@ -176,6 +178,7 @@ mako/
 │   │   ├── clickhouse.go           # ClickHouse sink (clickhouse-go v2)
 │   │   ├── s3.go                   # S3 sink (AWS SDK v2)
 │   │   ├── gcs.go                  # GCS sink (cloud.google.com/go/storage)
+│   │   ├── duckdb.go              # DuckDB sink (embedded, export to Parquet/CSV)
 │   │   ├── encode.go               # Shared Parquet + CSV encoders
 │   │   └── resolve.go              # Secret resolution chain (config → env → Vault)
 │   ├── kafka/kafka.go              # Kafka source + sink (franz-go)
@@ -210,6 +213,9 @@ mako/
 │   ├── snowflake/                  # Snowflake flatten examples
 │   │   ├── pipeline-movies.yaml
 │   │   └── pipeline-users.yaml
+│   ├── duckdb/                     # DuckDB pipeline examples
+│   │   ├── pipeline-parquet-to-duckdb.yaml
+│   │   └── pipeline-duckdb-to-parquet.yaml
 │   ├── wasm-plugin/                # WASM plugin example (TinyGo) — STANDBY
 │   │   ├── main.go
 │   │   └── pipeline.yaml
@@ -273,6 +279,8 @@ go test -bench=. -benchmem ./...
 - [x] OAuth2 JSON content type support for HTTP source
 - [x] Rust WASM plugin example (recommended language for plugins)
 - [x] WASM runtime hardening (skip `_start` for library-style plugins)
+- [x] DuckDB embedded source (SQL queries, native Parquet/CSV/JSON reading)
+- [x] DuckDB embedded sink (auto-table, schema evolution, COPY TO export)
 
 ---
 
