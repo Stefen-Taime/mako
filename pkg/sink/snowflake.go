@@ -147,6 +147,8 @@ func (s *SnowflakeSink) Open(ctx context.Context) error {
 }
 
 // Write inserts events into Snowflake using batch INSERT with PARSE_JSON.
+// Snowflake uses ? as parameter placeholder (not $N like PostgreSQL).
+// Events are inserted in a single transaction for atomicity.
 func (s *SnowflakeSink) Write(ctx context.Context, events []*pipeline.Event) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -157,34 +159,37 @@ func (s *SnowflakeSink) Write(ctx context.Context, events []*pipeline.Event) err
 
 	qualifiedTable := fmt.Sprintf("%s.%s.%s", s.database, s.schema, s.table)
 
-	// Build multi-row INSERT
-	// INSERT INTO db.schema.table (event_data, event_key, event_topic, event_offset)
-	// SELECT PARSE_JSON($1), $2, $3, $4
-	// UNION ALL SELECT PARSE_JSON($5), $6, $7, $8 ...
-	var sb strings.Builder
-	args := make([]any, 0, len(events)*4)
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("snowflake begin tx: %w", err)
+	}
+	defer tx.Rollback()
 
-	sb.WriteString(fmt.Sprintf("INSERT INTO %s (event_data, event_key, event_topic, event_offset) ", qualifiedTable))
+	query := fmt.Sprintf(
+		"INSERT INTO %s (event_data, event_key, event_topic, event_offset) SELECT PARSE_JSON(?), ?, ?, ?",
+		qualifiedTable,
+	)
 
-	for i, event := range events {
+	stmt, err := tx.PrepareContext(ctx, query)
+	if err != nil {
+		return fmt.Errorf("snowflake prepare: %w", err)
+	}
+	defer stmt.Close()
+
+	for _, event := range events {
 		data, err := json.Marshal(event.Value)
 		if err != nil {
 			return fmt.Errorf("marshal event: %w", err)
 		}
 
-		argBase := i * 4
-		if i > 0 {
-			sb.WriteString(" UNION ALL ")
+		_, err = stmt.ExecContext(ctx, string(data), string(event.Key), event.Topic, event.Offset)
+		if err != nil {
+			return fmt.Errorf("snowflake insert: %w", err)
 		}
-		sb.WriteString(fmt.Sprintf("SELECT PARSE_JSON($%d), $%d, $%d, $%d",
-			argBase+1, argBase+2, argBase+3, argBase+4))
-
-		args = append(args, string(data), string(event.Key), event.Topic, event.Offset)
 	}
 
-	_, err := s.db.ExecContext(ctx, sb.String(), args...)
-	if err != nil {
-		return fmt.Errorf("snowflake insert: %w", err)
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("snowflake commit: %w", err)
 	}
 
 	return nil
