@@ -63,6 +63,7 @@ type Pipeline struct {
 	errors         atomic.Int64
 	dlqCount       atomic.Int64
 	schemaFails    atomic.Int64
+	sinkLatency    atomic.Int64 // last sink write latency in microseconds
 	lastEvent      atomic.Value // time.Time
 	startedAt      time.Time
 
@@ -162,6 +163,7 @@ func (p *Pipeline) eventLoop(ctx context.Context, eventCh <-chan *Event, batchSi
 		}
 		anyFailed := false
 		for _, sink := range p.sinks {
+			start := time.Now()
 			if err := sink.Write(writeCtx, batch); err != nil {
 				log.Printf("[pipeline] sink %s write error: %v", sink.Name(), err)
 				p.errors.Add(1)
@@ -169,6 +171,7 @@ func (p *Pipeline) eventLoop(ctx context.Context, eventCh <-chan *Event, batchSi
 				anyFailed = true
 				continue
 			}
+			p.sinkLatency.Store(time.Since(start).Microseconds())
 		}
 		if !anyFailed {
 			p.eventsOut.Add(int64(len(batch)))
@@ -308,6 +311,8 @@ func (p *Pipeline) MetricsErrors() *atomic.Int64    { return &p.errors }
 func (p *Pipeline) MetricsDLQCount() *atomic.Int64  { return &p.dlqCount }
 // MetricsSchemaFails returns the schema failures counter.
 func (p *Pipeline) MetricsSchemaFails() *atomic.Int64 { return &p.schemaFails }
+// MetricsSinkLatency returns the last sink write latency in microseconds.
+func (p *Pipeline) MetricsSinkLatency() *atomic.Int64 { return &p.sinkLatency }
 // StartTime returns when the pipeline started.
 func (p *Pipeline) StartTime() time.Time { return p.startedAt }
 

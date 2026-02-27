@@ -635,23 +635,41 @@ func cmdRun(args []string) error {
 		return fmt.Errorf("start pipeline: %w", err)
 	}
 
+	// syncMetrics copies pipeline counters to the observability server.
+	syncMetrics := func() {
+		if obsSrv == nil {
+			return
+		}
+		obsSrv.Metrics().EventsIn.Store(pipe.MetricsEventsIn().Load())
+		obsSrv.Metrics().EventsOut.Store(pipe.MetricsEventsOut().Load())
+		obsSrv.Metrics().Errors.Store(pipe.MetricsErrors().Load())
+		obsSrv.Metrics().DLQCount.Store(pipe.MetricsDLQCount().Load())
+		obsSrv.Metrics().SchemaFails.Store(pipe.MetricsSchemaFails().Load())
+		obsSrv.Metrics().SetSinkLatency(pipe.MetricsSinkLatency().Load())
+	}
+
 	// Sync metrics from pipeline counters to observability server
+	var syncDone chan struct{}
 	if obsSrv != nil {
 		obsSrv.SetReady(true)
-		// Sync pipeline counters to observability server periodically
+		syncDone = make(chan struct{})
+		// Sync pipeline counters to observability server periodically.
+		// Uses pipe.Done() to exit instead of ctx.Done() so that the final
+		// counter values are captured even for short-lived pipelines.
 		go func() {
-			ticker := time.NewTicker(time.Second)
+			defer close(syncDone)
+			ticker := time.NewTicker(500 * time.Millisecond)
 			defer ticker.Stop()
 			for {
 				select {
+				case <-pipe.Done():
+					syncMetrics() // one final sync after source exhaustion
+					return
 				case <-ctx.Done():
+					syncMetrics() // one final sync on shutdown
 					return
 				case <-ticker.C:
-					obsSrv.Metrics().EventsIn.Store(pipe.MetricsEventsIn().Load())
-					obsSrv.Metrics().EventsOut.Store(pipe.MetricsEventsOut().Load())
-					obsSrv.Metrics().Errors.Store(pipe.MetricsErrors().Load())
-					obsSrv.Metrics().DLQCount.Store(pipe.MetricsDLQCount().Load())
-					obsSrv.Metrics().SchemaFails.Store(pipe.MetricsSchemaFails().Load())
+					syncMetrics()
 				}
 			}
 		}()
@@ -667,13 +685,20 @@ func cmdRun(args []string) error {
 		fmt.Fprintf(os.Stderr, "\n📄 Source exhausted. Shutting down...\n")
 	}
 
-	if obsSrv != nil {
-		obsSrv.SetReady(false)
-		obsSrv.Stop()
-	}
-
 	if err := pipe.Stop(); err != nil {
 		return fmt.Errorf("stop pipeline: %w", err)
+	}
+
+	// Wait for the sync goroutine to finish its final copy
+	if syncDone != nil {
+		<-syncDone
+	}
+
+	if obsSrv != nil {
+		// Final sync after pipeline.Stop() to capture any events flushed during shutdown
+		syncMetrics()
+		obsSrv.SetReady(false)
+		obsSrv.Stop()
 	}
 
 	status := pipe.Status()

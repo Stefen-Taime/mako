@@ -61,6 +61,11 @@ func (s *Server) Metrics() *PipelineMetrics {
 	return s.metrics
 }
 
+// SetSinkLatency updates the last sink write latency (in microseconds).
+func (m *PipelineMetrics) SetSinkLatency(us int64) {
+	m.sinkLatency.Store(us)
+}
+
 // SetReady marks the pipeline as ready (readiness probe will return 200).
 func (s *Server) SetReady(ready bool) {
 	s.ready.Store(ready)
