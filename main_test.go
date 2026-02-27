@@ -1,11 +1,16 @@
 package main
 
 import (
+	"context"
 	"encoding/csv"
 	"encoding/json"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
+	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -14,6 +19,7 @@ import (
 	"github.com/Stefen-Taime/mako/pkg/config"
 	"github.com/Stefen-Taime/mako/pkg/pipeline"
 	"github.com/Stefen-Taime/mako/pkg/sink"
+	"github.com/Stefen-Taime/mako/pkg/source"
 	"github.com/Stefen-Taime/mako/pkg/transform"
 	"github.com/Stefen-Taime/mako/pkg/vault"
 )
@@ -1782,6 +1788,726 @@ func TestVaultClientTTLNilSafe(t *testing.T) {
 	}
 	if c.AuthType() != "" {
 		t.Errorf("expected empty auth type from nil client")
+	}
+}
+
+// ═══════════════════════════════════════════
+// Postgres CDC Source Tests
+// ═══════════════════════════════════════════
+
+func TestPostgresCDCSourceConfig(t *testing.T) {
+	yaml := `
+apiVersion: mako/v1
+kind: Pipeline
+pipeline:
+  name: cdc-test
+  source:
+    type: postgres_cdc
+    config:
+      host: db.example.com
+      port: "5433"
+      user: cdc_user
+      password: secret
+      database: myapp
+      tables: [users, orders, payments]
+      schema: app
+      mode: snapshot+cdc
+      snapshot_batch_size: 5000
+      snapshot_order_by: created_at
+      slot_name: my_slot
+      publication: my_pub
+      start_lsn: "0/1234ABCD"
+  sink:
+    type: stdout
+`
+	spec, err := config.Parse([]byte(yaml))
+	if err != nil {
+		t.Fatalf("parse failed: %v", err)
+	}
+
+	if spec.Pipeline.Source.Type != v1.SourcePostgres {
+		t.Errorf("expected source type postgres_cdc, got %q", spec.Pipeline.Source.Type)
+	}
+
+	src := source.NewPostgresCDCSource(spec.Pipeline.Source.Config)
+	if src.Mode() != "snapshot+cdc" {
+		t.Errorf("expected mode 'snapshot+cdc', got %q", src.Mode())
+	}
+	if src.Schema() != "app" {
+		t.Errorf("expected schema 'app', got %q", src.Schema())
+	}
+	tables := src.Tables()
+	if len(tables) != 3 || tables[0] != "users" || tables[1] != "orders" || tables[2] != "payments" {
+		t.Errorf("unexpected tables: %v", tables)
+	}
+	if src.SlotName() != "my_slot" {
+		t.Errorf("expected slot_name 'my_slot', got %q", src.SlotName())
+	}
+	if src.Publication() != "my_pub" {
+		t.Errorf("expected publication 'my_pub', got %q", src.Publication())
+	}
+}
+
+func TestPostgresCDCSourceModes(t *testing.T) {
+	modes := []string{"snapshot", "cdc", "snapshot+cdc"}
+	for _, mode := range modes {
+		cfg := map[string]any{
+			"tables": []any{"test_table"},
+			"mode":   mode,
+		}
+		src := source.NewPostgresCDCSource(cfg)
+		if src.Mode() != mode {
+			t.Errorf("expected mode %q, got %q", mode, src.Mode())
+		}
+	}
+}
+
+func TestPostgresCDCSourceDSNConstruction(t *testing.T) {
+	// Test DSN from individual fields
+	cfg := map[string]any{
+		"host":     "myhost",
+		"port":     "5433",
+		"user":     "myuser",
+		"password": "mypass",
+		"database": "mydb",
+		"tables":   []any{"t1"},
+	}
+	src := source.NewPostgresCDCSource(cfg)
+	dsn := src.DSN()
+	if !strings.Contains(dsn, "myhost") {
+		t.Errorf("DSN should contain host, got %q", dsn)
+	}
+	if !strings.Contains(dsn, "5433") {
+		t.Errorf("DSN should contain port, got %q", dsn)
+	}
+	if !strings.Contains(dsn, "myuser") {
+		t.Errorf("DSN should contain user, got %q", dsn)
+	}
+	if !strings.Contains(dsn, "mydb") {
+		t.Errorf("DSN should contain database, got %q", dsn)
+	}
+
+	// Test DSN from explicit dsn config
+	cfg2 := map[string]any{
+		"dsn":    "postgres://explicit:pass@host:5432/db",
+		"tables": []any{"t1"},
+	}
+	src2 := source.NewPostgresCDCSource(cfg2)
+	if src2.DSN() != "postgres://explicit:pass@host:5432/db" {
+		t.Errorf("expected explicit DSN, got %q", src2.DSN())
+	}
+}
+
+func TestPostgresCDCSnapshotEvent(t *testing.T) {
+	record := map[string]any{"id": 1, "name": "Alice", "email": "alice@example.com"}
+	event := source.SnapshotEvent("users", "public", record, 42)
+
+	if event.Topic != "public.users" {
+		t.Errorf("expected topic 'public.users', got %q", event.Topic)
+	}
+	if event.Offset != 42 {
+		t.Errorf("expected offset 42, got %d", event.Offset)
+	}
+	if event.Metadata["operation"] != "snapshot" {
+		t.Errorf("expected operation 'snapshot', got %v", event.Metadata["operation"])
+	}
+	if event.Metadata["table"] != "users" {
+		t.Errorf("expected table 'users', got %v", event.Metadata["table"])
+	}
+	if event.Value["name"] != "Alice" {
+		t.Errorf("expected name 'Alice', got %v", event.Value["name"])
+	}
+}
+
+func TestPostgresCDCEventFormat(t *testing.T) {
+	tests := []struct {
+		operation string
+		lsn       string
+	}{
+		{"insert", "0/1234ABCD"},
+		{"update", "0/5678EF01"},
+		{"delete", "0/9ABC2345"},
+	}
+
+	for _, tc := range tests {
+		record := map[string]any{"id": 1, "name": "Bob"}
+		event := source.CDCEvent("orders", "public", tc.operation, tc.lsn, record, 0)
+
+		if event.Metadata["operation"] != tc.operation {
+			t.Errorf("expected operation %q, got %v", tc.operation, event.Metadata["operation"])
+		}
+		if event.Metadata["lsn"] != tc.lsn {
+			t.Errorf("expected lsn %q, got %v", tc.lsn, event.Metadata["lsn"])
+		}
+		if event.Topic != "public.orders" {
+			t.Errorf("expected topic 'public.orders', got %q", event.Topic)
+		}
+	}
+}
+
+// ═══════════════════════════════════════════
+// HTTP Source Tests
+// ═══════════════════════════════════════════
+
+func TestHTTPSourceConfig(t *testing.T) {
+	yaml := `
+apiVersion: mako/v1
+kind: Pipeline
+pipeline:
+  name: http-test
+  source:
+    type: http
+    config:
+      url: https://api.example.com/v1/users
+      method: POST
+      auth_type: bearer
+      auth_token: my-token
+      response_type: json
+      data_path: data.results
+      pagination_type: offset
+      pagination_limit: 50
+      poll_interval: 5m
+      rate_limit_rps: 5
+      timeout: 10s
+      max_retries: 5
+  sink:
+    type: stdout
+`
+	spec, err := config.Parse([]byte(yaml))
+	if err != nil {
+		t.Fatalf("parse failed: %v", err)
+	}
+
+	if spec.Pipeline.Source.Type != v1.SourceHTTP {
+		t.Errorf("expected source type http, got %q", spec.Pipeline.Source.Type)
+	}
+
+	src := source.NewHTTPSource(spec.Pipeline.Source.Config)
+	if src.URL() != "https://api.example.com/v1/users" {
+		t.Errorf("expected url, got %q", src.URL())
+	}
+	if src.Method() != "POST" {
+		t.Errorf("expected POST, got %q", src.Method())
+	}
+	if src.AuthType() != "bearer" {
+		t.Errorf("expected bearer auth, got %q", src.AuthType())
+	}
+	if src.ResponseType() != "json" {
+		t.Errorf("expected json response type, got %q", src.ResponseType())
+	}
+	if src.DataPath() != "data.results" {
+		t.Errorf("expected data path 'data.results', got %q", src.DataPath())
+	}
+	if src.PaginationType() != "offset" {
+		t.Errorf("expected offset pagination, got %q", src.PaginationType())
+	}
+	if src.PollInterval() != 5*time.Minute {
+		t.Errorf("expected 5m poll interval, got %v", src.PollInterval())
+	}
+}
+
+func TestHTTPSourceParseResponse(t *testing.T) {
+	// Test extracting records from nested JSON using data_path
+	src := source.NewHTTPSource(map[string]any{
+		"url":           "http://test",
+		"response_type": "json",
+		"data_path":     "data.results",
+	})
+
+	body := []byte(`{
+		"data": {
+			"results": [
+				{"id": 1, "name": "Alice"},
+				{"id": 2, "name": "Bob"}
+			],
+			"total": 2
+		}
+	}`)
+
+	records, fullBody, err := src.ParseResponse(body)
+	if err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+	if len(records) != 2 {
+		t.Fatalf("expected 2 records, got %d", len(records))
+	}
+	if records[0]["name"] != "Alice" {
+		t.Errorf("expected Alice, got %v", records[0]["name"])
+	}
+	if records[1]["name"] != "Bob" {
+		t.Errorf("expected Bob, got %v", records[1]["name"])
+	}
+	// fullBody should contain total
+	if fullBody == nil {
+		t.Fatal("expected fullBody to be non-nil")
+	}
+}
+
+func TestHTTPSourceParseResponseFlat(t *testing.T) {
+	// Test extracting records from flat JSON array (no data_path)
+	src := source.NewHTTPSource(map[string]any{
+		"url":           "http://test",
+		"response_type": "json",
+	})
+
+	body := []byte(`[{"id": 1, "name": "Alice"}, {"id": 2, "name": "Bob"}]`)
+
+	records, _, err := src.ParseResponse(body)
+	if err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+	if len(records) != 2 {
+		t.Fatalf("expected 2 records, got %d", len(records))
+	}
+}
+
+func TestHTTPSourceParseCSV(t *testing.T) {
+	src := source.NewHTTPSource(map[string]any{
+		"url":           "http://test",
+		"response_type": "csv",
+	})
+
+	body := []byte("id,name,email\n1,Alice,alice@test.com\n2,Bob,bob@test.com\n")
+
+	records, _, err := src.ParseResponse(body)
+	if err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+	if len(records) != 2 {
+		t.Fatalf("expected 2 records, got %d", len(records))
+	}
+	if records[0]["name"] != "Alice" {
+		t.Errorf("expected Alice, got %v", records[0]["name"])
+	}
+	if records[1]["email"] != "bob@test.com" {
+		t.Errorf("expected bob@test.com, got %v", records[1]["email"])
+	}
+}
+
+func TestHTTPSourceAuth(t *testing.T) {
+	tests := []struct {
+		name     string
+		cfg      map[string]any
+		expected string // expected Authorization header prefix
+	}{
+		{
+			name: "bearer",
+			cfg: map[string]any{
+				"url":        "http://test",
+				"auth_type":  "bearer",
+				"auth_token": "my-token-123",
+			},
+			expected: "Bearer my-token-123",
+		},
+		{
+			name: "basic",
+			cfg: map[string]any{
+				"url":           "http://test",
+				"auth_type":     "basic",
+				"auth_user":     "admin",
+				"auth_password": "secret",
+			},
+			expected: "Basic ",
+		},
+		{
+			name: "api_key",
+			cfg: map[string]any{
+				"url":            "http://test",
+				"auth_type":      "api_key",
+				"api_key_header": "X-API-Key",
+				"api_key_value":  "key-123",
+			},
+			expected: "", // not in Authorization header
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			var receivedHeaders http.Header
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				receivedHeaders = r.Header.Clone()
+				w.Write([]byte(`[]`))
+			}))
+			defer server.Close()
+
+			tc.cfg["url"] = server.URL
+			src := source.NewHTTPSource(tc.cfg)
+			src.SetClient(server.Client())
+
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+
+			if err := src.Open(ctx); err != nil {
+				t.Fatalf("open error: %v", err)
+			}
+
+			ch, err := src.Read(ctx)
+			if err != nil {
+				t.Fatalf("read error: %v", err)
+			}
+
+			// Drain events
+			for range ch {
+			}
+
+			if tc.expected != "" {
+				authHeader := receivedHeaders.Get("Authorization")
+				if !strings.HasPrefix(authHeader, tc.expected) {
+					t.Errorf("expected Authorization starting with %q, got %q", tc.expected, authHeader)
+				}
+			}
+
+			if tc.name == "api_key" {
+				apiKey := receivedHeaders.Get("X-API-Key")
+				if apiKey != "key-123" {
+					t.Errorf("expected X-API-Key 'key-123', got %q", apiKey)
+				}
+			}
+		})
+	}
+}
+
+func TestHTTPSourcePaginationOffset(t *testing.T) {
+	var requestCount atomic.Int32
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestCount.Add(1)
+		offsetStr := r.URL.Query().Get("offset")
+		offset, _ := strconv.Atoi(offsetStr)
+
+		var records []map[string]any
+		if offset == 0 {
+			records = []map[string]any{{"id": 1}, {"id": 2}}
+		} else if offset == 2 {
+			records = []map[string]any{{"id": 3}}
+		}
+		// offset >= 3 returns empty
+
+		resp := map[string]any{
+			"data":  records,
+			"total": 3,
+		}
+		json.NewEncoder(w).Encode(resp)
+	}))
+	defer server.Close()
+
+	src := source.NewHTTPSource(map[string]any{
+		"url":                    server.URL,
+		"response_type":          "json",
+		"data_path":              "data",
+		"pagination_type":        "offset",
+		"pagination_limit":       2,
+		"pagination_limit_param": "limit",
+		"pagination_offset_param": "offset",
+		"pagination_total_path":  "total",
+	})
+	src.SetClient(server.Client())
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	if err := src.Open(ctx); err != nil {
+		t.Fatalf("open error: %v", err)
+	}
+
+	ch, err := src.Read(ctx)
+	if err != nil {
+		t.Fatalf("read error: %v", err)
+	}
+
+	var events []*pipeline.Event
+	for event := range ch {
+		events = append(events, event)
+	}
+
+	if len(events) != 3 {
+		t.Errorf("expected 3 events, got %d", len(events))
+	}
+
+	reqCount := requestCount.Load()
+	if reqCount < 2 {
+		t.Errorf("expected at least 2 HTTP requests for pagination, got %d", reqCount)
+	}
+}
+
+func TestHTTPSourcePaginationCursor(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		cursor := r.URL.Query().Get("cursor")
+
+		var resp map[string]any
+		if cursor == "" {
+			resp = map[string]any{
+				"data": []map[string]any{{"id": 1}, {"id": 2}},
+				"meta": map[string]any{"next_cursor": "abc123"},
+			}
+		} else if cursor == "abc123" {
+			resp = map[string]any{
+				"data": []map[string]any{{"id": 3}},
+				"meta": map[string]any{"next_cursor": nil},
+			}
+		}
+		json.NewEncoder(w).Encode(resp)
+	}))
+	defer server.Close()
+
+	src := source.NewHTTPSource(map[string]any{
+		"url":                     server.URL,
+		"response_type":           "json",
+		"data_path":               "data",
+		"pagination_type":         "cursor",
+		"pagination_limit":        10,
+		"pagination_cursor_param": "cursor",
+		"pagination_cursor_path":  "meta.next_cursor",
+	})
+	src.SetClient(server.Client())
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	if err := src.Open(ctx); err != nil {
+		t.Fatalf("open error: %v", err)
+	}
+
+	ch, err := src.Read(ctx)
+	if err != nil {
+		t.Fatalf("read error: %v", err)
+	}
+
+	var events []*pipeline.Event
+	for event := range ch {
+		events = append(events, event)
+	}
+
+	if len(events) != 3 {
+		t.Errorf("expected 3 events from cursor pagination, got %d", len(events))
+	}
+}
+
+func TestHTTPSourcePollInterval(t *testing.T) {
+	var requestCount atomic.Int32
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestCount.Add(1)
+		json.NewEncoder(w).Encode([]map[string]any{{"id": requestCount.Load()}})
+	}))
+	defer server.Close()
+
+	src := source.NewHTTPSource(map[string]any{
+		"url":           server.URL,
+		"response_type": "json",
+		"poll_interval": "100ms",
+	})
+	src.SetClient(server.Client())
+
+	ctx, cancel := context.WithTimeout(context.Background(), 350*time.Millisecond)
+	defer cancel()
+
+	if err := src.Open(ctx); err != nil {
+		t.Fatalf("open error: %v", err)
+	}
+
+	ch, err := src.Read(ctx)
+	if err != nil {
+		t.Fatalf("read error: %v", err)
+	}
+
+	var events []*pipeline.Event
+	for event := range ch {
+		events = append(events, event)
+	}
+
+	// Should have initial fetch + at least 1-2 polls in 350ms with 100ms interval
+	if len(events) < 2 {
+		t.Errorf("expected at least 2 events from polling, got %d", len(events))
+	}
+}
+
+func TestHTTPSourceRateLimiter(t *testing.T) {
+	src := source.NewHTTPSource(map[string]any{
+		"url":             "http://test",
+		"rate_limit_rps":  5,
+		"rate_limit_burst": 10,
+	})
+	limiter := src.RateLimiter()
+	if limiter == nil {
+		t.Fatal("expected rate limiter to be non-nil")
+	}
+	if limiter.Limit() != 5 {
+		t.Errorf("expected rate limit 5, got %v", limiter.Limit())
+	}
+	if limiter.Burst() != 10 {
+		t.Errorf("expected burst 10, got %d", limiter.Burst())
+	}
+}
+
+func TestHTTPSourceRetryOn429(t *testing.T) {
+	var requestCount atomic.Int32
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		count := requestCount.Add(1)
+		if count <= 2 {
+			w.Header().Set("Retry-After", "1")
+			w.WriteHeader(429)
+			w.Write([]byte(`{"error": "rate limited"}`))
+			return
+		}
+		json.NewEncoder(w).Encode([]map[string]any{{"id": 1}})
+	}))
+	defer server.Close()
+
+	src := source.NewHTTPSource(map[string]any{
+		"url":         server.URL,
+		"max_retries": 3,
+	})
+	src.SetClient(server.Client())
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	if err := src.Open(ctx); err != nil {
+		t.Fatalf("open error: %v", err)
+	}
+
+	ch, err := src.Read(ctx)
+	if err != nil {
+		t.Fatalf("read error: %v", err)
+	}
+
+	var events []*pipeline.Event
+	for event := range ch {
+		events = append(events, event)
+	}
+
+	if len(events) != 1 {
+		t.Errorf("expected 1 event after retries, got %d", len(events))
+	}
+
+	// Should have made 3 requests (2 retries + 1 success)
+	if requestCount.Load() < 3 {
+		t.Errorf("expected at least 3 requests, got %d", requestCount.Load())
+	}
+}
+
+func TestHTTPSourceRetryOn5xx(t *testing.T) {
+	var requestCount atomic.Int32
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		count := requestCount.Add(1)
+		if count == 1 {
+			w.WriteHeader(503)
+			w.Write([]byte(`{"error": "service unavailable"}`))
+			return
+		}
+		json.NewEncoder(w).Encode([]map[string]any{{"id": 1}})
+	}))
+	defer server.Close()
+
+	src := source.NewHTTPSource(map[string]any{
+		"url":         server.URL,
+		"max_retries": 3,
+	})
+	src.SetClient(server.Client())
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	if err := src.Open(ctx); err != nil {
+		t.Fatalf("open error: %v", err)
+	}
+
+	ch, err := src.Read(ctx)
+	if err != nil {
+		t.Fatalf("read error: %v", err)
+	}
+
+	var events []*pipeline.Event
+	for event := range ch {
+		events = append(events, event)
+	}
+
+	if len(events) != 1 {
+		t.Errorf("expected 1 event after 5xx retry, got %d", len(events))
+	}
+}
+
+func TestHTTPSourceNoRetryOn4xx(t *testing.T) {
+	statusCodes := []int{400, 401, 403, 404}
+
+	for _, code := range statusCodes {
+		t.Run(fmt.Sprintf("status_%d", code), func(t *testing.T) {
+			var requestCount atomic.Int32
+
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				requestCount.Add(1)
+				w.WriteHeader(code)
+				w.Write([]byte(`{"error": "client error"}`))
+			}))
+			defer server.Close()
+
+			src := source.NewHTTPSource(map[string]any{
+				"url":         server.URL,
+				"max_retries": 3,
+			})
+			src.SetClient(server.Client())
+
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+
+			if err := src.Open(ctx); err != nil {
+				t.Fatalf("open error: %v", err)
+			}
+
+			ch, err := src.Read(ctx)
+			if err != nil {
+				t.Fatalf("read error: %v", err)
+			}
+
+			// Drain events
+			for range ch {
+			}
+
+			// Should only make 1 request (no retries on 4xx)
+			if requestCount.Load() != 1 {
+				t.Errorf("expected 1 request (no retry on %d), got %d", code, requestCount.Load())
+			}
+		})
+	}
+}
+
+func TestHTTPSourceGetNestedValue(t *testing.T) {
+	obj := map[string]any{
+		"data": map[string]any{
+			"results": []any{
+				map[string]any{"id": 1},
+			},
+			"meta": map[string]any{
+				"cursor": "abc",
+			},
+		},
+	}
+
+	// Test nested path
+	val, ok := source.GetNestedValue(obj, "data.meta.cursor")
+	if !ok {
+		t.Fatal("expected to find value at data.meta.cursor")
+	}
+	if val != "abc" {
+		t.Errorf("expected 'abc', got %v", val)
+	}
+
+	// Test missing path
+	_, ok = source.GetNestedValue(obj, "data.missing.path")
+	if ok {
+		t.Error("expected not to find value at data.missing.path")
+	}
+
+	// Test top-level key
+	val, ok = source.GetNestedValue(obj, "data")
+	if !ok {
+		t.Fatal("expected to find value at 'data'")
+	}
+	if _, ok := val.(map[string]any); !ok {
+		t.Error("expected map at 'data'")
 	}
 }
 

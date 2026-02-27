@@ -519,8 +519,12 @@ func cmdRun(args []string) error {
 		src = kafka.NewSource(brokers, p.Source.Topic, p.Source.ConsumerGroup, p.Source.StartOffset)
 	case "file":
 		src = source.NewFileSource(p.Source.Config)
+	case "postgres_cdc":
+		src = source.NewPostgresCDCSource(p.Source.Config)
+	case "http":
+		src = source.NewHTTPSource(p.Source.Config)
 	default:
-		return fmt.Errorf("unsupported source type for run: %s (supported: kafka, file)", p.Source.Type)
+		return fmt.Errorf("unsupported source type for run: %s (supported: kafka, file, postgres_cdc, http)", p.Source.Type)
 	}
 
 	// Build sinks
