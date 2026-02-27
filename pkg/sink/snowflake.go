@@ -81,13 +81,13 @@ func NewSnowflakeSink(database, schema, table string, flatten bool, config map[s
 
 	// Build DSN from individual config/env vars if not provided
 	if dsn == "" {
-		account := sfEnvOrConfig(config, "account", "SNOWFLAKE_ACCOUNT", "")
-		user := sfEnvOrConfig(config, "user", "SNOWFLAKE_USER", "")
-		password := sfEnvOrConfig(config, "password", "SNOWFLAKE_PASSWORD", "")
+		account := Resolve(config, "account", "SNOWFLAKE_ACCOUNT", "")
+		user := Resolve(config, "user", "SNOWFLAKE_USER", "")
+		password := Resolve(config, "password", "SNOWFLAKE_PASSWORD", "")
 		if warehouse == "" {
-			warehouse = sfEnvOrConfig(config, "warehouse", "SNOWFLAKE_WAREHOUSE", "COMPUTE_WH")
+			warehouse = Resolve(config, "warehouse", "SNOWFLAKE_WAREHOUSE", "COMPUTE_WH")
 		}
-		role := sfEnvOrConfig(config, "role", "SNOWFLAKE_ROLE", "")
+		role := Resolve(config, "role", "SNOWFLAKE_ROLE", "")
 
 		if account != "" && user != "" {
 			dsn = fmt.Sprintf("%s:%s@%s/%s/%s",
@@ -122,18 +122,6 @@ func NewSnowflakeSink(database, schema, table string, flatten bool, config map[s
 		columnSet:  make(map[string]bool),
 		columnType: make(map[string]string),
 	}
-}
-
-func sfEnvOrConfig(cfg map[string]any, key, envKey, defaultVal string) string {
-	if cfg != nil {
-		if v, ok := cfg[key].(string); ok && v != "" {
-			return v
-		}
-	}
-	if v := os.Getenv(envKey); v != "" {
-		return v
-	}
-	return defaultVal
 }
 
 // Open connects to Snowflake.

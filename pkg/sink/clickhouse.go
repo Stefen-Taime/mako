@@ -94,16 +94,16 @@ func (s *ClickHouseSink) Open(ctx context.Context) error {
 		}
 	} else {
 		// Build options from individual config / env vars
-		host := envOrConfig(s.config, "host", "CLICKHOUSE_HOST", "localhost")
-		port := envOrConfig(s.config, "port", "CLICKHOUSE_PORT", "9000")
-		user := envOrConfig(s.config, "user", "CLICKHOUSE_USER", "default")
-		pass := envOrConfig(s.config, "password", "CLICKHOUSE_PASSWORD", "")
+		host := Resolve(s.config, "host", "CLICKHOUSE_HOST", "localhost")
+		port := Resolve(s.config, "port", "CLICKHOUSE_PORT", "9000")
+		user := Resolve(s.config, "user", "CLICKHOUSE_USER", "default")
+		pass := Resolve(s.config, "password", "CLICKHOUSE_PASSWORD", "")
 		db := s.database
 		if db == "" {
-			db = envOrConfig(s.config, "database", "CLICKHOUSE_DB", "default")
+			db = Resolve(s.config, "database", "CLICKHOUSE_DB", "default")
 		}
 
-		secure := envOrConfig(s.config, "secure", "CLICKHOUSE_SECURE", "false")
+		secure := Resolve(s.config, "secure", "CLICKHOUSE_SECURE", "false")
 		isSecure, _ := strconv.ParseBool(secure)
 
 		addr := fmt.Sprintf("%s:%s", host, port)

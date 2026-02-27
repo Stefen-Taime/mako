@@ -48,7 +48,7 @@ func NewGCSSink(bucket, prefix, format string, cfg map[string]any) *GCSSink {
 	if format == "" {
 		format = "jsonl"
 	}
-	project := envOrConfig(cfg, "project", "GCP_PROJECT", "")
+	project := Resolve(cfg, "project", "GCP_PROJECT", "")
 
 	return &GCSSink{
 		bucket:  bucket,
@@ -165,11 +165,11 @@ func (s *GCSSink) objectName(t time.Time, count int) string {
 func (s *GCSSink) encode(events []*pipeline.Event) ([]byte, error) {
 	switch s.format {
 	case "parquet":
-		compression := envOrConfig(s.cfg, "compression", "", "snappy")
+		compression := Resolve(s.cfg, "compression", "", "snappy")
 		return EncodeParquet(events, compression)
 
 	case "csv":
-		delimStr := envOrConfig(s.cfg, "csv_delimiter", "", ",")
+		delimStr := Resolve(s.cfg, "csv_delimiter", "", ",")
 		delimiter := ParseCSVDelimiter(delimStr)
 		return EncodeCSV(events, delimiter)
 

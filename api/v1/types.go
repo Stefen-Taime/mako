@@ -45,6 +45,20 @@ type Pipeline struct {
 	Isolation   IsolationSpec     `yaml:"isolation,omitempty" json:"isolation,omitempty"`
 	Monitoring  *MonitoringSpec   `yaml:"monitoring,omitempty" json:"monitoring,omitempty"`
 	Resources   *ResourceSpec     `yaml:"resources,omitempty" json:"resources,omitempty"`
+	Vault       *VaultSpec        `yaml:"vault,omitempty" json:"vault,omitempty"`
+}
+
+// VaultSpec configures optional HashiCorp Vault integration for secret resolution.
+// When configured, secrets are resolved in this order:
+//  1. Explicit YAML config value
+//  2. Environment variable
+//  3. Vault secret (from path + key)
+//  4. Default value
+//
+// If VAULT_ADDR is not set, Vault is completely disabled.
+type VaultSpec struct {
+	Path string `yaml:"path" json:"path"`                       // base Vault path (e.g., "secret/data/mako")
+	TTL  string `yaml:"ttl,omitempty" json:"ttl,omitempty"`     // cache TTL (default: 5m)
 }
 
 // ═══════════════════════════════════════════

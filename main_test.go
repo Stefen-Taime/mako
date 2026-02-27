@@ -15,6 +15,7 @@ import (
 	"github.com/Stefen-Taime/mako/pkg/pipeline"
 	"github.com/Stefen-Taime/mako/pkg/sink"
 	"github.com/Stefen-Taime/mako/pkg/transform"
+	"github.com/Stefen-Taime/mako/pkg/vault"
 )
 
 // ═══════════════════════════════════════════
@@ -1522,6 +1523,265 @@ func TestParseCSVDelimiter(t *testing.T) {
 		if got != tc.expected {
 			t.Errorf("ParseCSVDelimiter(%q) = %q, want %q", tc.input, got, tc.expected)
 		}
+	}
+}
+
+// ═══════════════════════════════════════════
+// Vault Integration Tests
+// ═══════════════════════════════════════════
+
+func TestResolveChainNoVault(t *testing.T) {
+	// Without Vault, resolution chain is: config -> env -> default
+	sink.ResetVault()
+	defer sink.ResetVault()
+
+	cfg := map[string]any{"host": "from-config"}
+
+	// 1. Config value takes priority
+	got := sink.Resolve(cfg, "host", "MAKO_TEST_HOST_RESOLVE", "default-host")
+	if got != "from-config" {
+		t.Errorf("expected 'from-config', got %q", got)
+	}
+
+	// 2. Env var takes priority over default
+	os.Setenv("MAKO_TEST_HOST_RESOLVE", "from-env")
+	defer os.Unsetenv("MAKO_TEST_HOST_RESOLVE")
+	got = sink.Resolve(nil, "host", "MAKO_TEST_HOST_RESOLVE", "default-host")
+	if got != "from-env" {
+		t.Errorf("expected 'from-env', got %q", got)
+	}
+
+	// 3. Default value when nothing else matches
+	got = sink.Resolve(nil, "host", "MAKO_TEST_NONEXISTENT_VAR", "default-host")
+	if got != "default-host" {
+		t.Errorf("expected 'default-host', got %q", got)
+	}
+
+	// 4. Empty config key falls through to env
+	cfg2 := map[string]any{"host": ""}
+	got = sink.Resolve(cfg2, "host", "MAKO_TEST_HOST_RESOLVE", "default-host")
+	if got != "from-env" {
+		t.Errorf("expected 'from-env' for empty config, got %q", got)
+	}
+}
+
+func TestResolveChainWithVaultPath(t *testing.T) {
+	// When VAULT_ADDR is not set, New() returns nil — Vault is disabled
+	sink.ResetVault()
+	defer sink.ResetVault()
+
+	// Simulate: no Vault configured, vault_path in config should be ignored
+	cfg := map[string]any{
+		"vault_path": "secret/data/mako/postgres",
+	}
+	got := sink.Resolve(cfg, "password", "", "default-pass")
+	if got != "default-pass" {
+		t.Errorf("expected 'default-pass' without Vault client, got %q", got)
+	}
+
+	// Config value still takes priority even with vault_path set
+	cfg["password"] = "config-pass"
+	got = sink.Resolve(cfg, "password", "", "default-pass")
+	if got != "config-pass" {
+		t.Errorf("expected 'config-pass', got %q", got)
+	}
+}
+
+func TestVaultSpecParsing(t *testing.T) {
+	yaml := `
+apiVersion: mako/v1
+kind: Pipeline
+pipeline:
+  name: vault-test
+  vault:
+    path: secret/data/mako
+    ttl: 10m
+  source:
+    type: kafka
+    topic: events.test
+  sink:
+    type: postgres
+    database: mako
+    table: users
+    config:
+      vault_path: secret/data/mako/postgres
+`
+	spec, err := config.Parse([]byte(yaml))
+	if err != nil {
+		t.Fatalf("parse failed: %v", err)
+	}
+
+	if spec.Pipeline.Vault == nil {
+		t.Fatal("expected vault spec to be non-nil")
+	}
+	if spec.Pipeline.Vault.Path != "secret/data/mako" {
+		t.Errorf("expected vault path 'secret/data/mako', got %q", spec.Pipeline.Vault.Path)
+	}
+	if spec.Pipeline.Vault.TTL != "10m" {
+		t.Errorf("expected vault TTL '10m', got %q", spec.Pipeline.Vault.TTL)
+	}
+
+	// Verify vault_path in sink config
+	vp, ok := spec.Pipeline.Sink.Config["vault_path"].(string)
+	if !ok || vp != "secret/data/mako/postgres" {
+		t.Errorf("expected sink vault_path 'secret/data/mako/postgres', got %q", vp)
+	}
+}
+
+func TestVaultSpecOmitted(t *testing.T) {
+	// When vault is not specified in YAML, it should be nil
+	yaml := `
+apiVersion: mako/v1
+kind: Pipeline
+pipeline:
+  name: no-vault
+  source:
+    type: kafka
+    topic: events.test
+  sink:
+    type: stdout
+`
+	spec, err := config.Parse([]byte(yaml))
+	if err != nil {
+		t.Fatalf("parse failed: %v", err)
+	}
+
+	if spec.Pipeline.Vault != nil {
+		t.Errorf("expected vault spec to be nil when not specified, got %+v", spec.Pipeline.Vault)
+	}
+}
+
+func TestVaultClientNilWhenNotConfigured(t *testing.T) {
+	// Ensure VAULT_ADDR is not set
+	oldAddr := os.Getenv("VAULT_ADDR")
+	os.Unsetenv("VAULT_ADDR")
+	defer func() {
+		if oldAddr != "" {
+			os.Setenv("VAULT_ADDR", oldAddr)
+		}
+	}()
+
+	client, err := vault.New()
+	if err != nil {
+		t.Fatalf("vault.New() returned error: %v", err)
+	}
+	if client != nil {
+		t.Error("expected nil client when VAULT_ADDR is not set")
+	}
+}
+
+func TestVaultCacheTTL(t *testing.T) {
+	// Test that the InitVaultWithTTL function parses TTL correctly
+	sink.ResetVault()
+	defer sink.ResetVault()
+
+	// Without VAULT_ADDR, InitVaultWithTTL should return nil client
+	oldAddr := os.Getenv("VAULT_ADDR")
+	os.Unsetenv("VAULT_ADDR")
+	defer func() {
+		if oldAddr != "" {
+			os.Setenv("VAULT_ADDR", oldAddr)
+		}
+	}()
+
+	client, err := sink.InitVaultWithTTL("10m")
+	if err != nil {
+		t.Fatalf("InitVaultWithTTL returned error: %v", err)
+	}
+	if client != nil {
+		t.Error("expected nil client when VAULT_ADDR not set")
+	}
+}
+
+func TestResolveBackwardsCompatible(t *testing.T) {
+	// Verify that Resolve() behaves identically to the old envOrConfig()
+	// when Vault is not configured.
+	sink.ResetVault()
+	defer sink.ResetVault()
+
+	tests := []struct {
+		name       string
+		cfg        map[string]any
+		key        string
+		envKey     string
+		envVal     string
+		defaultVal string
+		expected   string
+	}{
+		{
+			name:       "config value wins",
+			cfg:        map[string]any{"host": "cfg-host"},
+			key:        "host",
+			envKey:     "MAKO_TEST_BC_HOST",
+			defaultVal: "default",
+			expected:   "cfg-host",
+		},
+		{
+			name:       "env var wins over default",
+			cfg:        nil,
+			key:        "host",
+			envKey:     "MAKO_TEST_BC_HOST2",
+			envVal:     "env-host",
+			defaultVal: "default",
+			expected:   "env-host",
+		},
+		{
+			name:       "default when nothing else",
+			cfg:        map[string]any{},
+			key:        "host",
+			envKey:     "MAKO_TEST_BC_NONE",
+			defaultVal: "fallback",
+			expected:   "fallback",
+		},
+		{
+			name:       "nil config falls through",
+			cfg:        nil,
+			key:        "password",
+			envKey:     "MAKO_TEST_BC_NOENV",
+			defaultVal: "secret",
+			expected:   "secret",
+		},
+		{
+			name:       "non-string config value falls through",
+			cfg:        map[string]any{"port": 5432},
+			key:        "port",
+			envKey:     "MAKO_TEST_BC_PORT",
+			defaultVal: "3306",
+			expected:   "3306",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.envVal != "" {
+				os.Setenv(tc.envKey, tc.envVal)
+				defer os.Unsetenv(tc.envKey)
+			}
+			got := sink.Resolve(tc.cfg, tc.key, tc.envKey, tc.defaultVal)
+			if got != tc.expected {
+				t.Errorf("Resolve() = %q, want %q", got, tc.expected)
+			}
+		})
+	}
+}
+
+func TestVaultClientGetNilSafe(t *testing.T) {
+	// Calling Get on a nil client should return empty string
+	var c *vault.Client
+	got := c.Get("secret/data/test", "key")
+	if got != "" {
+		t.Errorf("expected empty string from nil client, got %q", got)
+	}
+}
+
+func TestVaultClientTTLNilSafe(t *testing.T) {
+	// TTL and AuthType should be safe on nil client
+	var c *vault.Client
+	if c.TTL() != 0 {
+		t.Errorf("expected 0 TTL from nil client")
+	}
+	if c.AuthType() != "" {
+		t.Errorf("expected empty auth type from nil client")
 	}
 }
 

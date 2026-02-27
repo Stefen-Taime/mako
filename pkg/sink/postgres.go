@@ -59,13 +59,13 @@ func NewPostgresSink(database, schema, table string, flatten bool, cfg map[strin
 	}
 	if dsn == "" {
 		// Build DSN from individual config or env vars
-		host := envOrConfig(cfg, "host", "POSTGRES_HOST", "localhost")
-		port := envOrConfig(cfg, "port", "POSTGRES_PORT", "5432")
-		user := envOrConfig(cfg, "user", "POSTGRES_USER", "mako")
-		pass := envOrConfig(cfg, "password", "POSTGRES_PASSWORD", "mako")
+		host := Resolve(cfg, "host", "POSTGRES_HOST", "localhost")
+		port := Resolve(cfg, "port", "POSTGRES_PORT", "5432")
+		user := Resolve(cfg, "user", "POSTGRES_USER", "mako")
+		pass := Resolve(cfg, "password", "POSTGRES_PASSWORD", "mako")
 		db := database
 		if db == "" {
-			db = envOrConfig(cfg, "database", "POSTGRES_DB", "mako")
+			db = Resolve(cfg, "database", "POSTGRES_DB", "mako")
 		}
 		dsn = fmt.Sprintf("postgres://%s:%s@%s:%s/%s?sslmode=disable",
 			user, pass, host, port, db)
@@ -84,19 +84,6 @@ func NewPostgresSink(database, schema, table string, flatten bool, cfg map[strin
 		columnSet:  make(map[string]bool),
 		columnType: make(map[string]string),
 	}
-}
-
-// envOrConfig returns value from config map, then env var, then default.
-func envOrConfig(cfg map[string]any, key, envKey, defaultVal string) string {
-	if cfg != nil {
-		if v, ok := cfg[key].(string); ok && v != "" {
-			return v
-		}
-	}
-	if v := os.Getenv(envKey); v != "" {
-		return v
-	}
-	return defaultVal
 }
 
 // Open establishes the connection pool to PostgreSQL.

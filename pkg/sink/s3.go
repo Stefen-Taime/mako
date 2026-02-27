@@ -54,7 +54,7 @@ func NewS3Sink(bucket, prefix, format string, cfg map[string]any) *S3Sink {
 	if format == "" {
 		format = "jsonl"
 	}
-	region := envOrConfig(cfg, "region", "AWS_REGION", "us-east-1")
+	region := Resolve(cfg, "region", "AWS_REGION", "us-east-1")
 
 	return &S3Sink{
 		bucket: bucket,
@@ -73,8 +73,8 @@ func (s *S3Sink) Open(ctx context.Context) error {
 	}
 
 	// Allow explicit credentials via config
-	accessKey := envOrConfig(s.cfg, "access_key_id", "AWS_ACCESS_KEY_ID", "")
-	secretKey := envOrConfig(s.cfg, "secret_access_key", "AWS_SECRET_ACCESS_KEY", "")
+	accessKey := Resolve(s.cfg, "access_key_id", "AWS_ACCESS_KEY_ID", "")
+	secretKey := Resolve(s.cfg, "secret_access_key", "AWS_SECRET_ACCESS_KEY", "")
 	if accessKey != "" && secretKey != "" {
 		opts = append(opts, config.WithCredentialsProvider(
 			credentials.NewStaticCredentialsProvider(accessKey, secretKey, ""),
@@ -82,7 +82,7 @@ func (s *S3Sink) Open(ctx context.Context) error {
 	}
 
 	// Optional custom endpoint (e.g. MinIO, LocalStack)
-	endpoint := envOrConfig(s.cfg, "endpoint", "AWS_S3_ENDPOINT", "")
+	endpoint := Resolve(s.cfg, "endpoint", "AWS_S3_ENDPOINT", "")
 
 	awsCfg, err := config.LoadDefaultConfig(ctx, opts...)
 	if err != nil {
@@ -183,11 +183,11 @@ func (s *S3Sink) objectKey(t time.Time, count int) string {
 func (s *S3Sink) encode(events []*pipeline.Event) ([]byte, error) {
 	switch s.format {
 	case "parquet":
-		compression := envOrConfig(s.cfg, "compression", "", "snappy")
+		compression := Resolve(s.cfg, "compression", "", "snappy")
 		return EncodeParquet(events, compression)
 
 	case "csv":
-		delimStr := envOrConfig(s.cfg, "csv_delimiter", "", ",")
+		delimStr := Resolve(s.cfg, "csv_delimiter", "", ",")
 		delimiter := ParseCSVDelimiter(delimStr)
 		return EncodeCSV(events, delimiter)
 
