@@ -135,8 +135,8 @@ func (s *SnowflakeSink) Open(ctx context.Context) error {
 	db.SetMaxOpenConns(10)
 	db.SetMaxIdleConns(5)
 
-	// Use a dedicated timeout for Snowflake init operations (ping, USE WAREHOUSE,
-	// CREATE TABLE) because the initial connection can be slow.
+	// Use a dedicated timeout for Snowflake init operations (ping, CREATE TABLE)
+	// because the initial connection can be slow.
 	initCtx, initCancel := context.WithTimeout(ctx, 30*time.Second)
 	defer initCancel()
 
@@ -145,13 +145,10 @@ func (s *SnowflakeSink) Open(ctx context.Context) error {
 		return fmt.Errorf("snowflake ping: %w", err)
 	}
 
-	// Set warehouse context if specified
-	if s.warehouse != "" {
-		if _, err := db.ExecContext(initCtx, fmt.Sprintf("USE WAREHOUSE %s", s.warehouse)); err != nil {
-			// Non-fatal: warehouse might be set in the DSN
-			fmt.Fprintf(os.Stderr, "[snowflake] warning: USE WAREHOUSE failed: %v\n", err)
-		}
-	}
+	// NOTE: warehouse is set via the DSN query parameter (?warehouse=X).
+	// A redundant USE WAREHOUSE command here can corrupt the driver's
+	// internal connection state and cause subsequent queries to fail
+	// with context deadline exceeded.
 
 	// Auto-create the target table if it does not exist.
 	qualifiedTable := fmt.Sprintf("%s.%s.%s", s.database, s.schema, s.table)
@@ -167,6 +164,7 @@ func (s *SnowflakeSink) Open(ctx context.Context) error {
 		return fmt.Errorf("snowflake create table: %w", err)
 	}
 
+	fmt.Fprintf(os.Stderr, "[snowflake] connected to %s.%s.%s\n", s.database, s.schema, s.table)
 	s.db = db
 	return nil
 }
