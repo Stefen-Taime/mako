@@ -41,7 +41,7 @@ sink:
     # dsn: user:password@account/database/schema?warehouse=WH
 ```
 
-Events stored as `VARIANT` (JSON) via `PARSE_JSON()`. Target table schema:
+By default, events are stored as `VARIANT` (JSON) via `PARSE_JSON()`. Target table is auto-created:
 
 ```sql
 CREATE TABLE ORDER_EVENTS (
@@ -52,6 +52,50 @@ CREATE TABLE ORDER_EVENTS (
     loaded_at     TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP()
 );
 ```
+
+### Flatten mode
+
+With `flatten: true`, each top-level key in the event JSON becomes its own typed column instead of being stored in a single VARIANT column. The table schema is auto-detected from the first batch of events.
+
+```yaml
+sink:
+  type: snowflake
+  database: ANALYTICS
+  schema: RAW
+  table: USERS
+  flatten: true
+  config:
+    account: xy12345.us-east-1
+    user: MAKO_USER
+    warehouse: COMPUTE_WH
+    role: MAKO_ROLE
+```
+
+Type mapping:
+
+| Go type | Snowflake type |
+|---|---|
+| `string` | `VARCHAR` |
+| `float64` | `FLOAT` |
+| `bool` | `BOOLEAN` |
+| `map` / `array` (nested) | `VARIANT` |
+
+The generated table looks like:
+
+```sql
+CREATE TABLE USERS (
+    city        VARCHAR,
+    email       VARCHAR,
+    first_name  VARCHAR,
+    popularity  FLOAT,
+    address     VARIANT,
+    loaded_at   TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP()
+);
+```
+
+Schema evolution is handled automatically: if new keys appear in later batches, columns are added via `ALTER TABLE ADD COLUMN IF NOT EXISTS`.
+
+Nested objects (like `address`) are inserted using `PARSE_JSON()` and stored as `VARIANT`, so they remain queryable with Snowflake's semi-structured data syntax (`address:city`, `address:zip`).
 
 ## BigQuery (streaming inserter)
 

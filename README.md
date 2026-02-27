@@ -200,6 +200,9 @@ mako/
 ├── examples/
 │   ├── simple/pipeline.yaml
 │   ├── advanced/pipeline.yaml
+│   ├── snowflake/                  # Snowflake flatten examples
+│   │   ├── pipeline-movies.yaml
+│   │   └── pipeline-users.yaml
 │   └── wasm-plugin/                # WASM plugin example (Go/TinyGo)
 │       ├── main.go
 │       └── pipeline.yaml
@@ -237,7 +240,7 @@ go test -bench=. -benchmem ./...
 
 - [x] Kafka consumer/producer (franz-go)
 - [x] PostgreSQL sink (pgx + COPY)
-- [x] Snowflake sink (gosnowflake)
+- [x] Snowflake sink (gosnowflake) + flatten mode (auto-typed columns)
 - [x] BigQuery sink (streaming inserter)
 - [x] Schema Registry validation (JSON Schema)
 - [x] File source (JSONL, CSV, JSON)
