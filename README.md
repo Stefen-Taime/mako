@@ -67,7 +67,7 @@ mako generate pipeline.yaml --tf > infra.tf
 
 | Concept | Mako |
 |---|---|
-| Sources | Kafka (franz-go), File (JSONL, CSV, JSON) — [docs](docs/sources.md) |
+| Sources | Kafka, File, PostgreSQL CDC, HTTP/API — [docs](docs/sources.md) |
 | Transforms | hash, mask, filter, rename, dedupe + WASM plugins — [docs](docs/transforms.md) |
 | Sinks | PostgreSQL, Snowflake, BigQuery, ClickHouse, S3, GCS, Kafka — [docs](docs/sinks.md) |
 | Schema | Confluent Schema Registry (JSON Schema + Avro) — [docs](docs/observability.md#schema-enforcement) |
@@ -137,8 +137,8 @@ pipeline.yaml
   |  Source --> Transform Chain --> Sink(s)   |
   |  (Kafka)    hash_fields       Postgres   |
   |  (File)     mask_fields       Snowflake  |
-  |             filter            BigQuery   |
-  |             rename            ClickHouse |
+  |  (PG CDC)   filter            BigQuery   |
+  |  (HTTP)     rename            ClickHouse |
   |             deduplicate       S3 / GCS   |
   |             wasm_plugin       Kafka      |
   |                               Stdout     |
@@ -163,7 +163,10 @@ mako/
 │   ├── transform/
 │   │   ├── transform.go            # Transform implementations
 │   │   └── wasm.go                 # WASM plugin runtime (wazero)
-│   ├── source/file.go              # File source (JSONL, CSV, JSON)
+│   ├── source/
+│   │   ├── file.go                 # File source (JSONL, CSV, JSON)
+│   │   ├── postgres_cdc.go         # PostgreSQL CDC source (pgx + pglogrepl)
+│   │   └── http.go                 # HTTP/API source (REST, pagination, OAuth2)
 │   ├── sink/
 │   │   ├── sink.go                 # Stdout, File sinks + BuildFromSpec
 │   │   ├── postgres.go             # PostgreSQL sink (pgx)
@@ -171,14 +174,17 @@ mako/
 │   │   ├── bigquery.go             # BigQuery sink (streaming inserter)
 │   │   ├── clickhouse.go           # ClickHouse sink (clickhouse-go v2)
 │   │   ├── s3.go                   # S3 sink (AWS SDK v2)
-│   │   └── gcs.go                  # GCS sink (cloud.google.com/go/storage)
+│   │   ├── gcs.go                  # GCS sink (cloud.google.com/go/storage)
+│   │   ├── encode.go               # Shared Parquet + CSV encoders
+│   │   └── resolve.go              # Secret resolution chain (config → env → Vault)
 │   ├── kafka/kafka.go              # Kafka source + sink (franz-go)
 │   ├── schema/registry.go          # Schema Registry client + validator
 │   ├── observability/server.go     # Prometheus metrics + health + status HTTP
+│   ├── vault/vault.go              # HashiCorp Vault client (optional)
 │   └── codegen/codegen.go          # K8s + Terraform generators
 ├── internal/cli/cli.go             # CLI helpers
 ├── main.go                         # CLI entry point
-├── main_test.go                    # 25+ tests + benchmarks
+├── main_test.go                    # 70+ tests + benchmarks
 ├── docs/                           # Detailed documentation
 │   ├── sources.md
 │   ├── transforms.md
@@ -217,7 +223,7 @@ GitHub Actions runs on every push/PR:
 
 **Unit tests** (fast, no Docker):
 
-- 32+ tests covering config, validation, transforms, WASM plugins, codegen
+- 70+ tests covering config, validation, transforms, WASM plugins, codegen, sources, sinks
 - Benchmarks for transform chain performance
 - Example validation + dry-run
 
@@ -253,6 +259,11 @@ go test -bench=. -benchmem ./...
 - [x] ClickHouse sink (clickhouse-go v2)
 - [x] Helm chart
 - [x] WASM plugin transforms (wazero)
+- [x] Flatten mode for PostgreSQL, BigQuery, ClickHouse sinks
+- [x] Parquet + CSV output formats for S3/GCS
+- [x] HashiCorp Vault integration (secret resolution chain)
+- [x] PostgreSQL CDC source (snapshot, cdc, snapshot+cdc)
+- [x] HTTP/API source (pagination, OAuth2, rate limiting, retries)
 
 ---
 

@@ -21,6 +21,36 @@ sink:
 
 Features: `pgxpool` connection pool, bulk `COPY FROM` with batch INSERT fallback, automatic JSONB serialization.
 
+### Flatten mode
+
+With `flatten: true`, each top-level key becomes its own typed column instead of being stored in a single JSONB column. The table schema is auto-detected from the first batch.
+
+```yaml
+sink:
+  type: postgres
+  database: mako
+  schema: analytics
+  table: users
+  flatten: true
+  config:
+    host: localhost
+    port: "5432"
+    user: mako
+    password: mako
+```
+
+Type mapping:
+
+| Go type | PostgreSQL type |
+|---|---|
+| `string` | `TEXT` |
+| `float64` | `NUMERIC` |
+| `bool` | `BOOLEAN` |
+| `time.Time`-like string | `TIMESTAMPTZ` |
+| `map` / `array` (nested) | `JSONB` |
+
+Schema evolution is handled automatically: new keys trigger `ALTER TABLE ADD COLUMN IF NOT EXISTS`.
+
 ## Snowflake (gosnowflake)
 
 Production sink using the official [gosnowflake](https://github.com/snowflakedb/gosnowflake) driver.
@@ -114,6 +144,33 @@ Authentication via Application Default Credentials (ADC). Set `GOOGLE_APPLICATIO
 
 Features: streaming inserter with per-row `InsertID` dedup, `PutMultiError` handling, JSON-column alternative mode.
 
+### Flatten mode
+
+With `flatten: true`, each top-level key becomes its own typed column. The dataset table is auto-created from the first batch.
+
+```yaml
+sink:
+  type: bigquery
+  schema: raw_events
+  table: users
+  flatten: true
+  config:
+    project: my-gcp-project
+```
+
+Type mapping:
+
+| Go type | BigQuery type |
+|---|---|
+| `string` | `STRING` |
+| `float64` | `FLOAT64` |
+| `int` / `int64` | `INT64` |
+| `bool` | `BOOLEAN` |
+| `time.Time`-like string | `TIMESTAMP` |
+| `map` / `array` (nested) | `JSON` |
+
+Schema evolution is handled automatically via `TableMetadataToUpdate` when new keys appear.
+
 ## S3 (AWS SDK v2)
 
 Object storage sink using [AWS SDK for Go v2](https://github.com/aws/aws-sdk-go-v2). Events are buffered and flushed as time-partitioned objects.
@@ -123,7 +180,7 @@ sink:
   type: s3
   bucket: my-data-lake
   prefix: raw/events
-  format: jsonl                     # jsonl | json
+  format: jsonl                     # jsonl | json | parquet | csv
   config:
     region: us-east-1
     # Optional: explicit credentials (defaults to AWS SDK credential chain)
@@ -131,11 +188,24 @@ sink:
     secret_access_key: ...
     # Optional: custom endpoint for MinIO / LocalStack
     endpoint: http://localhost:9000
+    # Parquet options
+    compression: snappy             # snappy (default) | zstd | gzip | none
+    # CSV options
+    csv_delimiter: ","              # default: ","
 ```
 
-Object key pattern: `<prefix>/year=YYYY/month=MM/day=DD/hour=HH/<timestamp>_<count>.jsonl`
+Object key pattern: `<prefix>/year=YYYY/month=MM/day=DD/hour=HH/<timestamp>_<count>.<ext>`
 
 Features: Hive-style time partitioning, AWS credential chain (IAM, env, config), MinIO/LocalStack compatible via custom endpoint, buffered writes with retry on failure.
+
+### Output formats
+
+| Format | Extension | Content-Type | Description |
+|---|---|---|---|
+| `jsonl` | `.jsonl` | `application/x-ndjson` | One JSON object per line (default) |
+| `json` | `.json` | `application/json` | JSON array of objects |
+| `parquet` | `.parquet` | `application/octet-stream` | Columnar format, auto-schema from events. Compression: snappy, zstd, gzip, none |
+| `csv` | `.csv` | `text/csv` | RFC 4180 with header row, union-of-keys columns, configurable delimiter |
 
 ## GCS (cloud.google.com/go/storage)
 
@@ -146,16 +216,20 @@ sink:
   type: gcs
   bucket: my-data-lake
   prefix: raw/events
-  format: jsonl                     # jsonl | json
+  format: jsonl                     # jsonl | json | parquet | csv
   config:
     project: my-gcp-project
+    # Parquet options
+    compression: snappy             # snappy (default) | zstd | gzip | none
+    # CSV options
+    csv_delimiter: ","              # default: ","
 ```
 
 Authentication via Application Default Credentials (ADC). Set `GOOGLE_APPLICATION_CREDENTIALS` or run `gcloud auth application-default login`.
 
-Object name pattern: `<prefix>/year=YYYY/month=MM/day=DD/hour=HH/<timestamp>_<count>.jsonl`
+Object name pattern: `<prefix>/year=YYYY/month=MM/day=DD/hour=HH/<timestamp>_<count>.<ext>`
 
-Features: Hive-style time partitioning, ADC authentication, buffered writes with retry on failure.
+Features: Hive-style time partitioning, ADC authentication, buffered writes with retry on failure. Supports the same four output formats as S3 (jsonl, json, parquet, csv).
 
 ## ClickHouse (clickhouse-go v2)
 
@@ -193,6 +267,71 @@ PARTITION BY toYYYYMM(event_date);
 ```
 
 Features: native TCP protocol, LZ4 compression, batch inserts via `PrepareBatch`, automatic date partitioning.
+
+### Flatten mode
+
+With `flatten: true`, each top-level key becomes its own typed column. The table is auto-created with a `MergeTree()` engine.
+
+```yaml
+sink:
+  type: clickhouse
+  database: analytics
+  table: users
+  flatten: true
+  config:
+    host: localhost
+    port: "9000"
+    user: default
+```
+
+Type mapping:
+
+| Go type | ClickHouse type |
+|---|---|
+| `string` | `String` |
+| `float64` | `Float64` |
+| `int` / `int64` | `Int64` |
+| `bool` | `Bool` |
+| `time.Time`-like string | `DateTime64(3)` |
+
+Schema evolution is handled automatically via `ALTER TABLE ADD COLUMN IF NOT EXISTS`.
+
+## Secret Resolution (Vault)
+
+All sinks resolve credentials through a 4-step chain:
+
+1. **YAML config map** — value from `config:` in the pipeline YAML
+2. **Environment variable** — e.g., `SNOWFLAKE_PASSWORD`, `POSTGRES_PASSWORD`
+3. **HashiCorp Vault** — if `VAULT_ADDR` is set (optional)
+4. **Default value** — hardcoded fallback
+
+This is completely backwards compatible. If Vault is not configured, the chain is just config -> env -> default.
+
+### Vault configuration
+
+```yaml
+pipeline:
+  name: order-events
+  vault:
+    path: secret/data/mako         # Vault KV path prefix
+    ttl: 5m                        # cache TTL (default: 5m)
+  sink:
+    type: snowflake
+    config:
+      account: xy12345.us-east-1
+      user: MAKO_USER
+      vault_path: secret/data/mako/snowflake   # per-sink Vault path
+```
+
+Authentication via standard Vault environment variables:
+
+| Method | Environment variables |
+|---|---|
+| Token | `VAULT_ADDR` + `VAULT_TOKEN` |
+| AppRole | `VAULT_ADDR` + `VAULT_ROLE_ID` + `VAULT_SECRET_ID` |
+| Kubernetes | `VAULT_ADDR` + `VAULT_K8S_ROLE` |
+
+Supports KV v1 and v2 engines with automatic detection. Secrets are cached in-memory with configurable TTL.
 
 ## Multi-Sink
 

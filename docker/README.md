@@ -12,6 +12,7 @@ Stack Docker autonome pour developper et tester Mako contre de vrais services.
 | **Flink JobManager** | `localhost:8082` | Flink Dashboard |
 | **Flink TaskManager** | — | Worker (4 task slots) |
 | **Kafka UI** | `localhost:8080` | Interface web pour Kafka + Schema Registry |
+| **Adminer** | `localhost:8083` | Interface web pour PostgreSQL |
 
 ## Demarrage rapide
 

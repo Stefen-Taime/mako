@@ -20,3 +20,4 @@ docker compose up -d           # Start all services
 | PostgreSQL | `localhost:5432` | Sink database (user: `mako`, pass: `mako`) |
 | Flink SQL | `localhost:8082` | Stream processing dashboard |
 | Kafka UI | `localhost:8080` | Web UI for topics and messages |
+| Adminer | `localhost:8083` | Database UI for PostgreSQL |
