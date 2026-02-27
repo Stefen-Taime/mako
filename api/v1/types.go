@@ -150,7 +150,7 @@ type Sink struct {
 	Database string `yaml:"database,omitempty" json:"database,omitempty"`
 	Schema   string `yaml:"schema,omitempty" json:"schema,omitempty"`
 	Table    string `yaml:"table,omitempty" json:"table,omitempty"`
-	Flatten  bool   `yaml:"flatten,omitempty" json:"flatten,omitempty"` // Snowflake/Postgres: flatten JSON into typed columns
+	Flatten  bool   `yaml:"flatten,omitempty" json:"flatten,omitempty"` // Snowflake/Postgres/BigQuery/ClickHouse: flatten JSON into typed columns
 
 	// Kafka sink (for event routing)
 	Topic string `yaml:"topic,omitempty" json:"topic,omitempty"`

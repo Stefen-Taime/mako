@@ -839,6 +839,302 @@ func TestPgColumnTypeMixedEvent(t *testing.T) {
 	}
 }
 
+// ═══════════════════════════════════════════
+// BigQuery Flatten Tests
+// ═══════════════════════════════════════════
+
+func TestBqColumnTypeInference(t *testing.T) {
+	cases := []struct {
+		name     string
+		value    any
+		expected string
+	}{
+		{"string", "hello", "STRING"},
+		{"float64", 42.5, "FLOAT64"},
+		{"int", 42, "INT64"},
+		{"bool_true", true, "BOOLEAN"},
+		{"bool_false", false, "BOOLEAN"},
+		{"nested_object", map[string]any{"key": "val"}, "JSON"},
+		{"array", []any{1, 2, 3}, "JSON"},
+		{"nil", nil, "STRING"},
+		{"timestamp_rfc3339", "2024-01-15T10:30:00Z", "TIMESTAMP"},
+		{"timestamp_space", "2024-01-15 10:30:00+00", "TIMESTAMP"},
+		{"not_timestamp", "hello world", "STRING"},
+		{"empty_string", "", "STRING"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := sink.BqColumnType(tc.value)
+			if got != tc.expected {
+				t.Errorf("BqColumnType(%v) = %q, want %q", tc.value, got, tc.expected)
+			}
+		})
+	}
+}
+
+func TestBigQueryFlattenConfigParsing(t *testing.T) {
+	yaml := `
+apiVersion: mako/v1
+kind: Pipeline
+pipeline:
+  name: bq-flatten-test
+  source:
+    type: kafka
+    topic: events.users
+  sink:
+    type: bigquery
+    schema: raw_events
+    table: users
+    flatten: true
+    config:
+      project: my-gcp-project
+`
+	spec, err := config.Parse([]byte(yaml))
+	if err != nil {
+		t.Fatalf("parse failed: %v", err)
+	}
+
+	if spec.Pipeline.Sink.Type != v1.SinkBigQuery {
+		t.Errorf("expected sink type bigquery, got %q", spec.Pipeline.Sink.Type)
+	}
+	if !spec.Pipeline.Sink.Flatten {
+		t.Error("expected flatten to be true")
+	}
+	if spec.Pipeline.Sink.Table != "users" {
+		t.Errorf("expected table 'users', got %q", spec.Pipeline.Sink.Table)
+	}
+}
+
+func TestBigQueryFlattenNewSinkSignature(t *testing.T) {
+	cfg := map[string]any{
+		"project": "my-project",
+	}
+
+	s := sink.NewBigQuerySink("my-project", "raw_events", "users", true, cfg)
+	if s == nil {
+		t.Fatal("NewBigQuerySink returned nil")
+	}
+	if s.Name() != "bigquery:my-project.raw_events.users" {
+		t.Errorf("unexpected name: %s", s.Name())
+	}
+
+	// Non-flatten mode
+	s2 := sink.NewBigQuerySink("my-project", "raw_events", "events", false, cfg)
+	if s2 == nil {
+		t.Fatal("NewBigQuerySink returned nil for non-flatten")
+	}
+}
+
+func TestBigQueryFlattenBuildFromSpec(t *testing.T) {
+	spec := v1.Sink{
+		Type:    v1.SinkBigQuery,
+		Schema:  "raw_events",
+		Table:   "users",
+		Flatten: true,
+		Config: map[string]any{
+			"project": "my-gcp-project",
+		},
+	}
+
+	s, err := sink.BuildFromSpec(spec)
+	if err != nil {
+		t.Fatalf("BuildFromSpec failed: %v", err)
+	}
+	if s == nil {
+		t.Fatal("BuildFromSpec returned nil")
+	}
+	if s.Name() != "bigquery:my-gcp-project.raw_events.users" {
+		t.Errorf("unexpected sink name: %s", s.Name())
+	}
+}
+
+func TestBqColumnTypeMixedEvent(t *testing.T) {
+	event := map[string]any{
+		"user_id":    "usr-001",
+		"email":      "test@example.com",
+		"age":        float64(30),
+		"active":     true,
+		"created_at": "2024-06-15T10:00:00Z",
+		"address":    map[string]any{"city": "Paris", "zip": "75001"},
+		"tags":       []any{"admin", "user"},
+		"score":      float64(95.5),
+	}
+
+	expected := map[string]string{
+		"user_id":    "STRING",
+		"email":      "STRING",
+		"age":        "FLOAT64",
+		"active":     "BOOLEAN",
+		"created_at": "TIMESTAMP",
+		"address":    "JSON",
+		"tags":       "JSON",
+		"score":      "FLOAT64",
+	}
+
+	for field, expectedType := range expected {
+		got := sink.BqColumnType(event[field])
+		if got != expectedType {
+			t.Errorf("field %q: BqColumnType(%v) = %q, want %q",
+				field, event[field], got, expectedType)
+		}
+	}
+}
+
+// ═══════════════════════════════════════════
+// ClickHouse Flatten Tests
+// ═══════════════════════════════════════════
+
+func TestChColumnTypeInference(t *testing.T) {
+	cases := []struct {
+		name     string
+		value    any
+		expected string
+	}{
+		{"string", "hello", "String"},
+		{"float64", 42.5, "Float64"},
+		{"int", 42, "Int64"},
+		{"bool_true", true, "Bool"},
+		{"bool_false", false, "Bool"},
+		{"nested_object", map[string]any{"key": "val"}, "String"},
+		{"array", []any{1, 2, 3}, "String"},
+		{"nil", nil, "String"},
+		{"timestamp_rfc3339", "2024-01-15T10:30:00Z", "DateTime64(3)"},
+		{"timestamp_space", "2024-01-15 10:30:00+00", "DateTime64(3)"},
+		{"not_timestamp", "hello world", "String"},
+		{"empty_string", "", "String"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := sink.ChColumnType(tc.value)
+			if got != tc.expected {
+				t.Errorf("ChColumnType(%v) = %q, want %q", tc.value, got, tc.expected)
+			}
+		})
+	}
+}
+
+func TestClickHouseFlattenConfigParsing(t *testing.T) {
+	yaml := `
+apiVersion: mako/v1
+kind: Pipeline
+pipeline:
+  name: ch-flatten-test
+  source:
+    type: kafka
+    topic: events.users
+  sink:
+    type: clickhouse
+    database: analytics
+    table: users
+    flatten: true
+    config:
+      host: localhost
+      port: "9000"
+      user: default
+      password: ""
+`
+	spec, err := config.Parse([]byte(yaml))
+	if err != nil {
+		t.Fatalf("parse failed: %v", err)
+	}
+
+	if spec.Pipeline.Sink.Type != v1.SinkClickHouse {
+		t.Errorf("expected sink type clickhouse, got %q", spec.Pipeline.Sink.Type)
+	}
+	if !spec.Pipeline.Sink.Flatten {
+		t.Error("expected flatten to be true")
+	}
+	if spec.Pipeline.Sink.Table != "users" {
+		t.Errorf("expected table 'users', got %q", spec.Pipeline.Sink.Table)
+	}
+	if spec.Pipeline.Sink.Database != "analytics" {
+		t.Errorf("expected database 'analytics', got %q", spec.Pipeline.Sink.Database)
+	}
+}
+
+func TestClickHouseFlattenNewSinkSignature(t *testing.T) {
+	cfg := map[string]any{
+		"host":     "localhost",
+		"port":     "9000",
+		"user":     "default",
+		"password": "",
+	}
+
+	s := sink.NewClickHouseSink("analytics", "users", true, cfg)
+	if s == nil {
+		t.Fatal("NewClickHouseSink returned nil")
+	}
+	if s.Name() != "clickhouse:analytics.users" {
+		t.Errorf("unexpected name: %s", s.Name())
+	}
+
+	// Non-flatten mode
+	s2 := sink.NewClickHouseSink("analytics", "events", false, cfg)
+	if s2 == nil {
+		t.Fatal("NewClickHouseSink returned nil for non-flatten")
+	}
+}
+
+func TestClickHouseFlattenBuildFromSpec(t *testing.T) {
+	spec := v1.Sink{
+		Type:     v1.SinkClickHouse,
+		Database: "analytics",
+		Table:    "users",
+		Flatten:  true,
+		Config: map[string]any{
+			"host":     "localhost",
+			"port":     "9000",
+			"user":     "default",
+			"password": "",
+		},
+	}
+
+	s, err := sink.BuildFromSpec(spec)
+	if err != nil {
+		t.Fatalf("BuildFromSpec failed: %v", err)
+	}
+	if s == nil {
+		t.Fatal("BuildFromSpec returned nil")
+	}
+	if s.Name() != "clickhouse:analytics.users" {
+		t.Errorf("unexpected sink name: %s", s.Name())
+	}
+}
+
+func TestChColumnTypeMixedEvent(t *testing.T) {
+	event := map[string]any{
+		"user_id":    "usr-001",
+		"email":      "test@example.com",
+		"age":        float64(30),
+		"active":     true,
+		"created_at": "2024-06-15T10:00:00Z",
+		"address":    map[string]any{"city": "Paris", "zip": "75001"},
+		"tags":       []any{"admin", "user"},
+		"score":      float64(95.5),
+	}
+
+	expected := map[string]string{
+		"user_id":    "String",
+		"email":      "String",
+		"age":        "Float64",
+		"active":     "Bool",
+		"created_at": "DateTime64(3)",
+		"address":    "String",
+		"tags":       "String",
+		"score":      "Float64",
+	}
+
+	for field, expectedType := range expected {
+		got := sink.ChColumnType(event[field])
+		if got != expectedType {
+			t.Errorf("field %q: ChColumnType(%v) = %q, want %q",
+				field, event[field], got, expectedType)
+		}
+	}
+}
+
 func TestMain(m *testing.M) {
 	// Change to project root for example loading
 	if _, err := os.Stat("examples"); os.IsNotExist(err) {

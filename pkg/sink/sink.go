@@ -121,7 +121,7 @@ func BuildFromSpec(spec v1.Sink) (pipeline.Sink, error) {
 		return NewSnowflakeSink(spec.Database, spec.Schema, spec.Table, spec.Flatten, spec.Config), nil
 	case v1.SinkBigQuery:
 		project, _ := spec.Config["project"].(string)
-		return NewBigQuerySink(project, spec.Schema, spec.Table, spec.Config), nil
+		return NewBigQuerySink(project, spec.Schema, spec.Table, spec.Flatten, spec.Config), nil
 	case v1.SinkPostgres:
 		return NewPostgresSink(spec.Database, spec.Schema, spec.Table, spec.Flatten, spec.Config), nil
 	case v1.SinkKafka:
@@ -135,7 +135,7 @@ func BuildFromSpec(spec v1.Sink) (pipeline.Sink, error) {
 	case v1.SinkGCS:
 		return NewGCSSink(spec.Bucket, spec.Prefix, spec.Format, spec.Config), nil
 	case v1.SinkClickHouse:
-		return NewClickHouseSink(spec.Database, spec.Table, spec.Config), nil
+		return NewClickHouseSink(spec.Database, spec.Table, spec.Flatten, spec.Config), nil
 	default:
 		return nil, fmt.Errorf("unsupported sink type: %s", spec.Type)
 	}
