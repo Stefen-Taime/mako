@@ -10,6 +10,7 @@ import (
 	"github.com/Stefen-Taime/mako/api/v1"
 	"github.com/Stefen-Taime/mako/pkg/codegen"
 	"github.com/Stefen-Taime/mako/pkg/config"
+	"github.com/Stefen-Taime/mako/pkg/sink"
 	"github.com/Stefen-Taime/mako/pkg/transform"
 )
 
@@ -650,6 +651,191 @@ func BenchmarkHashField(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		chain.Apply(event)
+	}
+}
+
+// ═══════════════════════════════════════════
+// Postgres Flatten Tests
+// ═══════════════════════════════════════════
+
+func TestPgColumnTypeInference(t *testing.T) {
+	cases := []struct {
+		name     string
+		value    any
+		expected string
+	}{
+		{"string", "hello", "TEXT"},
+		{"float64", 42.5, "NUMERIC"},
+		{"int", 42, "NUMERIC"},
+		{"bool_true", true, "BOOLEAN"},
+		{"bool_false", false, "BOOLEAN"},
+		{"nested_object", map[string]any{"key": "val"}, "JSONB"},
+		{"array", []any{1, 2, 3}, "JSONB"},
+		{"nil", nil, "TEXT"},
+		{"timestamp_rfc3339", "2024-01-15T10:30:00Z", "TIMESTAMPTZ"},
+		{"timestamp_space", "2024-01-15 10:30:00+00", "TIMESTAMPTZ"},
+		{"not_timestamp", "hello world", "TEXT"},
+		{"empty_string", "", "TEXT"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := sink.PgColumnType(tc.value)
+			if got != tc.expected {
+				t.Errorf("PgColumnType(%v) = %q, want %q", tc.value, got, tc.expected)
+			}
+		})
+	}
+}
+
+func TestIsTimestampLike(t *testing.T) {
+	positives := []string{
+		"2024-01-15T10:30:00Z",
+		"2024-01-15T10:30:00.123Z",
+		"2024-01-15 10:30:00",
+		"2024-01-15T10:30:00+05:30",
+		"2023-12-31T23:59:59.999999Z",
+	}
+	for _, s := range positives {
+		if !sink.IsTimestampLike(s) {
+			t.Errorf("IsTimestampLike(%q) should be true", s)
+		}
+	}
+
+	negatives := []string{
+		"hello",
+		"2024-01-15",
+		"10:30:00",
+		"",
+		"not-a-timestamp",
+		"2024/01/15 10:30:00",
+	}
+	for _, s := range negatives {
+		if sink.IsTimestampLike(s) {
+			t.Errorf("IsTimestampLike(%q) should be false", s)
+		}
+	}
+}
+
+func TestPostgresFlattenConfigParsing(t *testing.T) {
+	yaml := `
+apiVersion: mako/v1
+kind: Pipeline
+pipeline:
+  name: flatten-test
+  source:
+    type: kafka
+    topic: events.users
+  sink:
+    type: postgres
+    database: mako
+    schema: public
+    table: users
+    flatten: true
+    config:
+      host: localhost
+      port: "5432"
+      user: mako
+      password: mako
+`
+	spec, err := config.Parse([]byte(yaml))
+	if err != nil {
+		t.Fatalf("parse failed: %v", err)
+	}
+
+	if spec.Pipeline.Sink.Type != v1.SinkPostgres {
+		t.Errorf("expected sink type postgres, got %q", spec.Pipeline.Sink.Type)
+	}
+	if !spec.Pipeline.Sink.Flatten {
+		t.Error("expected flatten to be true")
+	}
+	if spec.Pipeline.Sink.Table != "users" {
+		t.Errorf("expected table 'users', got %q", spec.Pipeline.Sink.Table)
+	}
+}
+
+func TestPostgresFlattenNewSinkSignature(t *testing.T) {
+	// Verify NewPostgresSink accepts the flatten parameter and stores it.
+	cfg := map[string]any{
+		"host":     "localhost",
+		"port":     "5432",
+		"user":     "test",
+		"password": "test",
+	}
+
+	s := sink.NewPostgresSink("testdb", "public", "users", true, cfg)
+	if s == nil {
+		t.Fatal("NewPostgresSink returned nil")
+	}
+	if s.Name() != "postgres:public.users" {
+		t.Errorf("unexpected name: %s", s.Name())
+	}
+
+	// Non-flatten mode
+	s2 := sink.NewPostgresSink("testdb", "public", "events", false, cfg)
+	if s2 == nil {
+		t.Fatal("NewPostgresSink returned nil for non-flatten")
+	}
+}
+
+func TestPostgresFlattenBuildFromSpec(t *testing.T) {
+	// Verify BuildFromSpec passes flatten flag to postgres sink.
+	spec := v1.Sink{
+		Type:     v1.SinkPostgres,
+		Database: "mako",
+		Schema:   "public",
+		Table:    "users",
+		Flatten:  true,
+		Config: map[string]any{
+			"host":     "localhost",
+			"port":     "5432",
+			"user":     "mako",
+			"password": "mako",
+		},
+	}
+
+	s, err := sink.BuildFromSpec(spec)
+	if err != nil {
+		t.Fatalf("BuildFromSpec failed: %v", err)
+	}
+	if s == nil {
+		t.Fatal("BuildFromSpec returned nil")
+	}
+	if s.Name() != "postgres:public.users" {
+		t.Errorf("unexpected sink name: %s", s.Name())
+	}
+}
+
+func TestPgColumnTypeMixedEvent(t *testing.T) {
+	// Simulate a realistic event and verify type inference for each field.
+	event := map[string]any{
+		"user_id":    "usr-001",
+		"email":      "test@example.com",
+		"age":        float64(30),
+		"active":     true,
+		"created_at": "2024-06-15T10:00:00Z",
+		"address":    map[string]any{"city": "Paris", "zip": "75001"},
+		"tags":       []any{"admin", "user"},
+		"score":      float64(95.5),
+	}
+
+	expected := map[string]string{
+		"user_id":    "TEXT",
+		"email":      "TEXT",
+		"age":        "NUMERIC",
+		"active":     "BOOLEAN",
+		"created_at": "TIMESTAMPTZ",
+		"address":    "JSONB",
+		"tags":       "JSONB",
+		"score":      "NUMERIC",
+	}
+
+	for field, expectedType := range expected {
+		got := sink.PgColumnType(event[field])
+		if got != expectedType {
+			t.Errorf("field %q: PgColumnType(%v) = %q, want %q",
+				field, event[field], got, expectedType)
+		}
 	}
 }
 

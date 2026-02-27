@@ -123,7 +123,7 @@ func BuildFromSpec(spec v1.Sink) (pipeline.Sink, error) {
 		project, _ := spec.Config["project"].(string)
 		return NewBigQuerySink(project, spec.Schema, spec.Table, spec.Config), nil
 	case v1.SinkPostgres:
-		return NewPostgresSink(spec.Database, spec.Schema, spec.Table, spec.Config), nil
+		return NewPostgresSink(spec.Database, spec.Schema, spec.Table, spec.Flatten, spec.Config), nil
 	case v1.SinkKafka:
 		brokers := ""
 		if spec.Config != nil {
