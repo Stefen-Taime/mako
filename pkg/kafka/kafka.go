@@ -187,10 +187,11 @@ func (s *Source) Lag() int64 {
 
 // Sink writes events to a Kafka topic using franz-go.
 type Sink struct {
-	brokers []string
-	topic   string
-	client  *kgo.Client
-	mu      sync.Mutex
+	brokers              []string
+	topic                string
+	allowAutoTopicCreate bool
+	client               *kgo.Client
+	mu                   sync.Mutex
 }
 
 // NewSink creates a Kafka sink.
@@ -201,6 +202,13 @@ func NewSink(brokers, topic string) *Sink {
 	}
 }
 
+// WithAutoTopicCreation enables auto-creation of the target topic
+// if it does not exist (requires broker allow.auto.create.topics=true).
+func (s *Sink) WithAutoTopicCreation() *Sink {
+	s.allowAutoTopicCreate = true
+	return s
+}
+
 // Open initializes the Kafka producer.
 func (s *Sink) Open(ctx context.Context) error {
 	opts := []kgo.Opt{
@@ -209,6 +217,10 @@ func (s *Sink) Open(ctx context.Context) error {
 		kgo.ProducerBatchMaxBytes(1024 * 1024), // 1MB
 		kgo.ProducerLinger(100 * time.Millisecond),
 		kgo.RequiredAcks(kgo.AllISRAcks()),
+	}
+
+	if s.allowAutoTopicCreate {
+		opts = append(opts, kgo.AllowAutoTopicCreation())
 	}
 
 	client, err := kgo.NewClient(opts...)

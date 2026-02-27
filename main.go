@@ -562,7 +562,7 @@ func cmdRun(args []string) error {
 		} else {
 			dlqTopic = p.Source.Topic + ".dlq"
 		}
-		dlqSink = kafka.NewSink(brokers, dlqTopic)
+		dlqSink = kafka.NewSink(brokers, dlqTopic).WithAutoTopicCreation()
 		if err := dlqSink.Open(context.Background()); err != nil {
 			return fmt.Errorf("open DLQ sink %s: %w", dlqTopic, err)
 		}

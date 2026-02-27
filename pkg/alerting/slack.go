@@ -24,6 +24,7 @@ type SlackAlerter struct {
 	WebhookURL string
 	Channel    string // from monitoring.alertChannel
 	Pipeline   string // pipeline name
+	Owner      string // pipeline owner
 	OnError    bool
 	OnSLA      bool
 	OnComplete bool
@@ -74,6 +75,7 @@ func NewSlackAlerter(spec *v1.PipelineSpec) *SlackAlerter {
 		WebhookURL: webhookURL,
 		Channel:    m.AlertChannel,
 		Pipeline:   p.Name,
+		Owner:      p.Owner,
 		OnError:    onError,
 		OnSLA:      onSLA,
 		OnComplete: onComplete,
@@ -90,18 +92,23 @@ func (a *SlackAlerter) SendError(ctx context.Context, pipelineErr error, eventsI
 		return
 	}
 
+	fields := []slackField{
+		{Title: "Error", Value: pipelineErr.Error(), Short: false},
+		{Title: "Events In", Value: fmt.Sprintf("%d", eventsIn), Short: true},
+		{Title: "Events Out", Value: fmt.Sprintf("%d", eventsOut), Short: true},
+	}
+	if a.Owner != "" {
+		fields = append(fields, slackField{Title: "Owner", Value: a.Owner, Short: true})
+	}
+
 	msg := slackMessage{
 		Channel:  a.Channel,
 		Username: "Mako Pipeline",
 		Icon:     ":shark:",
 		Attachments: []slackAttachment{{
-			Color: colorRed,
-			Title: fmt.Sprintf("Pipeline Error: %s", a.Pipeline),
-			Fields: []slackField{
-				{Title: "Error", Value: pipelineErr.Error(), Short: false},
-				{Title: "Events In", Value: fmt.Sprintf("%d", eventsIn), Short: true},
-				{Title: "Events Out", Value: fmt.Sprintf("%d", eventsOut), Short: true},
-			},
+			Color:     colorRed,
+			Title:     fmt.Sprintf("Pipeline Error: %s", a.Pipeline),
+			Fields:    fields,
 			Timestamp: time.Now().Unix(),
 		}},
 	}
@@ -115,17 +122,22 @@ func (a *SlackAlerter) SendSLABreach(ctx context.Context, sla time.Duration, act
 		return
 	}
 
+	fields := []slackField{
+		{Title: "Freshness SLA", Value: sla.String(), Short: true},
+		{Title: "Actual Delay", Value: actual.Truncate(time.Second).String(), Short: true},
+	}
+	if a.Owner != "" {
+		fields = append(fields, slackField{Title: "Owner", Value: a.Owner, Short: true})
+	}
+
 	msg := slackMessage{
 		Channel:  a.Channel,
 		Username: "Mako Pipeline",
 		Icon:     ":shark:",
 		Attachments: []slackAttachment{{
-			Color: colorRed,
-			Title: fmt.Sprintf("SLA Breach: %s", a.Pipeline),
-			Fields: []slackField{
-				{Title: "Freshness SLA", Value: sla.String(), Short: true},
-				{Title: "Actual Delay", Value: actual.Truncate(time.Second).String(), Short: true},
-			},
+			Color:     colorRed,
+			Title:     fmt.Sprintf("SLA Breach: %s", a.Pipeline),
+			Fields:    fields,
 			Timestamp: time.Now().Unix(),
 		}},
 	}
@@ -145,19 +157,24 @@ func (a *SlackAlerter) SendComplete(ctx context.Context, eventsIn, eventsOut, er
 		color = colorOrange
 	}
 
+	fields := []slackField{
+		{Title: "Events In", Value: fmt.Sprintf("%d", eventsIn), Short: true},
+		{Title: "Events Out", Value: fmt.Sprintf("%d", eventsOut), Short: true},
+		{Title: "Errors", Value: fmt.Sprintf("%d", errors), Short: true},
+		{Title: "Duration", Value: duration.Truncate(time.Second).String(), Short: true},
+	}
+	if a.Owner != "" {
+		fields = append(fields, slackField{Title: "Owner", Value: a.Owner, Short: true})
+	}
+
 	msg := slackMessage{
 		Channel:  a.Channel,
 		Username: "Mako Pipeline",
 		Icon:     ":shark:",
 		Attachments: []slackAttachment{{
-			Color: color,
-			Title: title,
-			Fields: []slackField{
-				{Title: "Events In", Value: fmt.Sprintf("%d", eventsIn), Short: true},
-				{Title: "Events Out", Value: fmt.Sprintf("%d", eventsOut), Short: true},
-				{Title: "Errors", Value: fmt.Sprintf("%d", errors), Short: true},
-				{Title: "Duration", Value: duration.Truncate(time.Second).String(), Short: true},
-			},
+			Color:     color,
+			Title:     title,
+			Fields:    fields,
 			Timestamp: time.Now().Unix(),
 		}},
 	}
@@ -179,21 +196,26 @@ func (a *SlackAlerter) SendRuleAlert(ctx context.Context, ruleName, ruleType, se
 
 	color := colorForSeverity(severity)
 
+	fields := []slackField{
+		{Title: "Type", Value: ruleType, Short: true},
+		{Title: "Pipeline", Value: a.Pipeline, Short: true},
+		{Title: "Message", Value: message, Short: false},
+		{Title: "Events In", Value: fmt.Sprintf("%d", eventsIn), Short: true},
+		{Title: "Events Out", Value: fmt.Sprintf("%d", eventsOut), Short: true},
+		{Title: "Errors", Value: fmt.Sprintf("%d", errors), Short: true},
+	}
+	if a.Owner != "" {
+		fields = append(fields, slackField{Title: "Owner", Value: a.Owner, Short: true})
+	}
+
 	msg := slackMessage{
 		Channel:  ch,
 		Username: "Mako Pipeline",
 		Icon:     ":shark:",
 		Attachments: []slackAttachment{{
-			Color: color,
-			Title: fmt.Sprintf("Alert: %s (%s)", ruleName, severity),
-			Fields: []slackField{
-				{Title: "Type", Value: ruleType, Short: true},
-				{Title: "Pipeline", Value: a.Pipeline, Short: true},
-				{Title: "Message", Value: message, Short: false},
-				{Title: "Events In", Value: fmt.Sprintf("%d", eventsIn), Short: true},
-				{Title: "Events Out", Value: fmt.Sprintf("%d", eventsOut), Short: true},
-				{Title: "Errors", Value: fmt.Sprintf("%d", errors), Short: true},
-			},
+			Color:     color,
+			Title:     fmt.Sprintf("Alert: %s (%s)", ruleName, severity),
+			Fields:    fields,
 			Timestamp: time.Now().Unix(),
 		}},
 	}

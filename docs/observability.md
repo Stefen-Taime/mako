@@ -252,3 +252,13 @@ isolation:
 ```
 
 Retry flow: sink write failure -> exponential backoff -> retry (up to N times) -> DLQ -> degrade state.
+
+### DLQ topic
+
+The DLQ topic name defaults to `<source.topic>.dlq` or can be set explicitly via `schema.dlqTopic`. The DLQ producer is configured with `AllowAutoTopicCreation`, so the topic is created automatically if the Kafka broker allows it (`auto.create.topics.enable=true`, which is the default). If your broker has auto-creation disabled, create the topic manually before running the pipeline:
+
+```bash
+kafka-topics --create --topic events.orders.dlq \
+  --bootstrap-server localhost:9092 \
+  --partitions 3 --replication-factor 1
+```
