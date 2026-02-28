@@ -570,6 +570,23 @@ func cmdRun(args []string) error {
 		}
 	}
 
+	// Initialize Vault client if configured
+	if p.Vault != nil {
+		client, err := sink.InitVaultWithTTL(p.Vault.TTL)
+		if err != nil {
+			return fmt.Errorf("vault init: %w", err)
+		}
+		if client != nil {
+			fmt.Fprintf(os.Stderr, "🔐 Vault:    connected (auth: %s, ttl: %s)\n", client.AuthType(), client.TTL())
+		}
+	} else {
+		// Auto-detect Vault from env even without explicit pipeline config
+		client, _ := sink.InitVault()
+		if client != nil {
+			fmt.Fprintf(os.Stderr, "🔐 Vault:    connected via env (auth: %s)\n", client.AuthType())
+		}
+	}
+
 	// Build sinks
 	var sinks []pipeline.Sink
 	if p.Sink.Type != "" {
