@@ -1,23 +1,4 @@
 {
-  "__inputs": [
-    {
-      "name": "DS_PROMETHEUS",
-      "label": "Prometheus",
-      "description": "Prometheus data source for Mako metrics",
-      "type": "datasource",
-      "pluginId": "prometheus",
-      "pluginName": "Prometheus"
-    }
-  ],
-  "__elements": {},
-  "__requires": [
-    { "type": "grafana", "id": "grafana", "name": "Grafana", "version": "10.0.0" },
-    { "type": "datasource", "id": "prometheus", "name": "Prometheus", "version": "1.0.0" },
-    { "type": "panel", "id": "stat", "name": "Stat", "version": "" },
-    { "type": "panel", "id": "timeseries", "name": "Time series", "version": "" },
-    { "type": "panel", "id": "gauge", "name": "Gauge", "version": "" },
-    { "type": "panel", "id": "table", "name": "Table", "version": "" }
-  ],
   "annotations": {
     "list": [
       {
@@ -46,7 +27,7 @@
       "type": "row"
     },
     {
-      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "datasource": { "type": "prometheus", "uid": "mako-prometheus" },
       "fieldConfig": {
         "defaults": {
           "color": { "mode": "thresholds" },
@@ -76,7 +57,7 @@
       "type": "stat",
       "targets": [
         {
-          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+          "datasource": { "type": "prometheus", "uid": "mako-prometheus" },
           "expr": "mako_events_in_total{pipeline=~\"$pipeline\"}",
           "legendFormat": "{{pipeline}}",
           "refId": "A"
@@ -84,7 +65,7 @@
       ]
     },
     {
-      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "datasource": { "type": "prometheus", "uid": "mako-prometheus" },
       "fieldConfig": {
         "defaults": {
           "color": { "mode": "thresholds" },
@@ -112,7 +93,7 @@
       "type": "stat",
       "targets": [
         {
-          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+          "datasource": { "type": "prometheus", "uid": "mako-prometheus" },
           "expr": "mako_events_out_total{pipeline=~\"$pipeline\"}",
           "legendFormat": "{{pipeline}}",
           "refId": "A"
@@ -120,7 +101,7 @@
       ]
     },
     {
-      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "datasource": { "type": "prometheus", "uid": "mako-prometheus" },
       "fieldConfig": {
         "defaults": {
           "color": { "mode": "thresholds" },
@@ -150,7 +131,7 @@
       "type": "stat",
       "targets": [
         {
-          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+          "datasource": { "type": "prometheus", "uid": "mako-prometheus" },
           "expr": "mako_errors_total{pipeline=~\"$pipeline\"}",
           "legendFormat": "{{pipeline}}",
           "refId": "A"
@@ -158,7 +139,7 @@
       ]
     },
     {
-      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "datasource": { "type": "prometheus", "uid": "mako-prometheus" },
       "fieldConfig": {
         "defaults": {
           "color": { "mode": "thresholds" },
@@ -188,7 +169,7 @@
       "type": "stat",
       "targets": [
         {
-          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+          "datasource": { "type": "prometheus", "uid": "mako-prometheus" },
           "expr": "mako_dlq_total{pipeline=~\"$pipeline\"}",
           "legendFormat": "{{pipeline}}",
           "refId": "A"
@@ -196,7 +177,7 @@
       ]
     },
     {
-      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "datasource": { "type": "prometheus", "uid": "mako-prometheus" },
       "fieldConfig": {
         "defaults": {
           "color": { "mode": "thresholds" },
@@ -226,7 +207,7 @@
       "type": "stat",
       "targets": [
         {
-          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+          "datasource": { "type": "prometheus", "uid": "mako-prometheus" },
           "expr": "mako_schema_failures_total{pipeline=~\"$pipeline\"}",
           "legendFormat": "{{pipeline}}",
           "refId": "A"
@@ -234,7 +215,7 @@
       ]
     },
     {
-      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "datasource": { "type": "prometheus", "uid": "mako-prometheus" },
       "fieldConfig": {
         "defaults": {
           "color": { "mode": "thresholds" },
@@ -262,7 +243,7 @@
       "type": "stat",
       "targets": [
         {
-          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+          "datasource": { "type": "prometheus", "uid": "mako-prometheus" },
           "expr": "mako_uptime_seconds{pipeline=~\"$pipeline\"}",
           "legendFormat": "{{pipeline}}",
           "refId": "A"
@@ -277,7 +258,7 @@
       "type": "row"
     },
     {
-      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "datasource": { "type": "prometheus", "uid": "mako-prometheus" },
       "fieldConfig": {
         "defaults": {
           "color": { "mode": "palette-classic" },
@@ -308,13 +289,13 @@
       "type": "timeseries",
       "targets": [
         {
-          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+          "datasource": { "type": "prometheus", "uid": "mako-prometheus" },
           "expr": "rate(mako_events_in_total{pipeline=~\"$pipeline\"}[1m])",
           "legendFormat": "{{pipeline}} — in",
           "refId": "A"
         },
         {
-          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+          "datasource": { "type": "prometheus", "uid": "mako-prometheus" },
           "expr": "rate(mako_events_out_total{pipeline=~\"$pipeline\"}[1m])",
           "legendFormat": "{{pipeline}} — out",
           "refId": "B"
@@ -322,7 +303,7 @@
       ]
     },
     {
-      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "datasource": { "type": "prometheus", "uid": "mako-prometheus" },
       "fieldConfig": {
         "defaults": {
           "color": { "mode": "palette-classic" },
@@ -352,7 +333,7 @@
       "type": "timeseries",
       "targets": [
         {
-          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+          "datasource": { "type": "prometheus", "uid": "mako-prometheus" },
           "expr": "mako_throughput_events_per_second{pipeline=~\"$pipeline\"}",
           "legendFormat": "{{pipeline}}",
           "refId": "A"
@@ -367,7 +348,7 @@
       "type": "row"
     },
     {
-      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "datasource": { "type": "prometheus", "uid": "mako-prometheus" },
       "fieldConfig": {
         "defaults": {
           "color": { "mode": "palette-classic" },
@@ -408,19 +389,19 @@
       "type": "timeseries",
       "targets": [
         {
-          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+          "datasource": { "type": "prometheus", "uid": "mako-prometheus" },
           "expr": "rate(mako_errors_total{pipeline=~\"$pipeline\"}[1m]) * 60",
           "legendFormat": "errors",
           "refId": "A"
         },
         {
-          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+          "datasource": { "type": "prometheus", "uid": "mako-prometheus" },
           "expr": "rate(mako_dlq_total{pipeline=~\"$pipeline\"}[1m]) * 60",
           "legendFormat": "dlq",
           "refId": "B"
         },
         {
-          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+          "datasource": { "type": "prometheus", "uid": "mako-prometheus" },
           "expr": "rate(mako_schema_failures_total{pipeline=~\"$pipeline\"}[1m]) * 60",
           "legendFormat": "schema_failures",
           "refId": "C"
@@ -428,7 +409,7 @@
       ]
     },
     {
-      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "datasource": { "type": "prometheus", "uid": "mako-prometheus" },
       "fieldConfig": {
         "defaults": {
           "color": { "mode": "thresholds" },
@@ -460,7 +441,7 @@
       "type": "gauge",
       "targets": [
         {
-          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+          "datasource": { "type": "prometheus", "uid": "mako-prometheus" },
           "expr": "(rate(mako_errors_total{pipeline=~\"$pipeline\"}[5m]) / (rate(mako_events_in_total{pipeline=~\"$pipeline\"}[5m]) > 0)) * 100",
           "legendFormat": "{{pipeline}}",
           "refId": "A"
@@ -468,7 +449,7 @@
       ]
     },
     {
-      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "datasource": { "type": "prometheus", "uid": "mako-prometheus" },
       "fieldConfig": {
         "defaults": {
           "color": { "mode": "thresholds" },
@@ -499,7 +480,7 @@
       "type": "stat",
       "targets": [
         {
-          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+          "datasource": { "type": "prometheus", "uid": "mako-prometheus" },
           "expr": "mako_pipeline_ready{pipeline=~\"$pipeline\"}",
           "legendFormat": "{{pipeline}}",
           "refId": "A"
@@ -514,7 +495,7 @@
       "type": "row"
     },
     {
-      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "datasource": { "type": "prometheus", "uid": "mako-prometheus" },
       "fieldConfig": {
         "defaults": {
           "color": { "mode": "palette-classic" },
@@ -544,7 +525,7 @@
       "type": "timeseries",
       "targets": [
         {
-          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+          "datasource": { "type": "prometheus", "uid": "mako-prometheus" },
           "expr": "mako_sink_latency_microseconds{pipeline=~\"$pipeline\"}",
           "legendFormat": "{{pipeline}}",
           "refId": "A"
@@ -552,7 +533,7 @@
       ]
     },
     {
-      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "datasource": { "type": "prometheus", "uid": "mako-prometheus" },
       "fieldConfig": {
         "defaults": {
           "color": { "mode": "palette-classic" },
@@ -582,13 +563,13 @@
       "type": "timeseries",
       "targets": [
         {
-          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+          "datasource": { "type": "prometheus", "uid": "mako-prometheus" },
           "expr": "mako_events_in_total{pipeline=~\"$pipeline\"}",
           "legendFormat": "{{pipeline}} — in",
           "refId": "A"
         },
         {
-          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+          "datasource": { "type": "prometheus", "uid": "mako-prometheus" },
           "expr": "mako_events_out_total{pipeline=~\"$pipeline\"}",
           "legendFormat": "{{pipeline}} — out",
           "refId": "B"
@@ -602,7 +583,7 @@
     "list": [
       {
         "current": { "selected": true, "text": "All", "value": "$__all" },
-        "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+        "datasource": { "type": "prometheus", "uid": "mako-prometheus" },
         "definition": "label_values(mako_events_in_total, pipeline)",
         "hide": 0,
         "includeAll": true,
