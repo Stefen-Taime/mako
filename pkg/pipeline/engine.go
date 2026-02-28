@@ -175,7 +175,9 @@ func (p *Pipeline) eventLoop(ctx context.Context, eventCh <-chan *Event, batchSi
 	ticker := time.NewTicker(flushInterval)
 	defer ticker.Stop()
 
-	// flush writes the current batch to all sinks.
+	// flush writes the current batch to all sinks and persists them.
+	// Write() buffers events; Flush() persists to storage (required for
+	// object-storage sinks like GCS/S3 that buffer until Flush is called).
 	// Uses the provided writeCtx (which may differ from the loop ctx during shutdown).
 	flush := func(writeCtx context.Context) {
 		if len(batch) == 0 {
@@ -188,6 +190,12 @@ func (p *Pipeline) eventLoop(ctx context.Context, eventCh <-chan *Event, batchSi
 				log.Printf("[pipeline] sink %s write error: %v", sink.Name(), err)
 				p.errors.Add(1)
 				p.handleError(writeCtx, err, batch)
+				anyFailed = true
+				continue
+			}
+			if err := sink.Flush(writeCtx); err != nil {
+				log.Printf("[pipeline] sink %s flush error: %v", sink.Name(), err)
+				p.errors.Add(1)
 				anyFailed = true
 				continue
 			}
@@ -337,6 +345,12 @@ func (p *Pipeline) parallelEventLoop(ctx context.Context, eventCh <-chan *Event,
 				log.Printf("[pipeline] sink %s write error: %v", sink.Name(), err)
 				p.errors.Add(1)
 				p.handleError(writeCtx, err, batch)
+				anyFailed = true
+				continue
+			}
+			if err := sink.Flush(writeCtx); err != nil {
+				log.Printf("[pipeline] sink %s flush error: %v", sink.Name(), err)
+				p.errors.Add(1)
 				anyFailed = true
 				continue
 			}
