@@ -196,7 +196,9 @@ sink:
 
 Object key pattern: `<prefix>/year=YYYY/month=MM/day=DD/hour=HH/<timestamp>_<count>.<ext>`
 
-Features: Hive-style time partitioning, AWS credential chain (IAM, env, config), MinIO/LocalStack compatible via custom endpoint, buffered writes with retry on failure.
+Each pipeline batch produces one S3 object. With `batch.size: 5000`, a dataset of 500K events produces ~100 properly partitioned objects instead of a single monolithic file.
+
+Features: Hive-style time partitioning, per-batch object creation, AWS credential chain (IAM, env, config), MinIO/LocalStack compatible via custom endpoint, buffered writes with retry on failure.
 
 ### Output formats
 
@@ -229,7 +231,9 @@ Authentication via Application Default Credentials (ADC). Set `GOOGLE_APPLICATIO
 
 Object name pattern: `<prefix>/year=YYYY/month=MM/day=DD/hour=HH/<timestamp>_<count>.<ext>`
 
-Features: Hive-style time partitioning, ADC authentication, buffered writes with retry on failure. Supports the same four output formats as S3 (jsonl, json, parquet, csv).
+Each pipeline batch produces one GCS object. With `batch.size: 5000`, a dataset of 500K events produces ~100 properly partitioned objects instead of a single monolithic file.
+
+Features: Hive-style time partitioning, per-batch object creation, ADC authentication, buffered writes with retry on failure. Supports the same four output formats as S3 (jsonl, json, parquet, csv).
 
 ## ClickHouse (clickhouse-go v2)
 

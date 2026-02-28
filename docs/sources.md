@@ -70,10 +70,31 @@ Works with any format (JSON, JSONL, CSV) and gzip variants. At `Open()` a HEAD r
 ### Supported formats
 
 - **JSONL** (`.jsonl`, `.ndjson`): one JSON object per line
-- **CSV** (`.csv`): with optional header row, configurable delimiter
+- **CSV** (`.csv`): with optional header row, configurable delimiter, variable field count supported
 - **JSON** (`.json`): single object or array of objects
 
 All formats support `.gz` compression (e.g. `.jsonl.gz`, `.csv.gz`, `.json.gz`).
+
+### CSV handling
+
+The CSV reader is designed for real-world data:
+
+- **Variable field counts**: rows with more or fewer fields than the header are handled gracefully (extra fields become `col_N`, missing fields are omitted)
+- **Lazy quotes**: unescaped quotes inside fields are tolerated
+- **Leading space trimming**: whitespace around delimiters is stripped
+- **Configurable delimiter**: comma (default), tab (`"\t"`), semicolon, pipe, etc.
+
+```yaml
+source:
+  type: file
+  config:
+    path: /data/products.csv.gz
+    format: csv
+    csv_header: true
+    csv_delimiter: "\t"      # tab-separated (TSV)
+```
+
+Tested with the [OpenFoodFacts](https://world.openfoodfacts.org/data) dataset (3.3M products, 200+ columns, 1.1 GB gzip, tab-separated) — processed in ~10 minutes via HTTP streaming with zero errors.
 
 ### Auto-termination
 
