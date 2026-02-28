@@ -352,6 +352,7 @@ func (s *FileSource) readCSV(ctx context.Context, r io.Reader, filePath string) 
 	reader.Comma = s.csvDelimiter
 	reader.LazyQuotes = true
 	reader.TrimLeadingSpace = true
+	reader.FieldsPerRecord = -1 // allow variable number of fields per row
 
 	var headers []string
 	var offset int64
