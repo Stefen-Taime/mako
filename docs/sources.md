@@ -325,3 +325,70 @@ pipeline:
     config:
       create_table: true
 ```
+
+## Multi-Source with Join
+
+Pipelines can define multiple named sources joined together before processing. The single `source:` field continues to work for backward compatibility.
+
+```yaml
+pipeline:
+  name: enriched-orders
+  sources:
+    - name: orders
+      type: kafka
+      topic: events.orders
+      brokers: localhost:9092
+      startOffset: latest
+
+    - name: customers
+      type: http
+      config:
+        url: http://localhost:8000/customers/
+        method: GET
+        auth_type: none
+        response_type: json
+
+  join:
+    type: left
+    on: "orders.customer_id = customers.id"
+    window: 5m
+```
+
+### Join types
+
+| Type | Description |
+|---|---|
+| `inner` | Emit only when all sources have a matching key |
+| `left` | Emit when the first source has a key, with right-side data if available |
+| `right` | Emit when the last source has a key, with left-side data if available |
+| `full` | Emit when any two sources have a matching key |
+
+### ON clause
+
+The `on` field specifies the join condition as `source_name.field = source_name.field`. Source names must match the `name:` of entries in the `sources:` array.
+
+### Window
+
+Optional `window` field (e.g., `5m`, `1h`) sets a time window for stream joins. Without a window, a simple in-memory hash join is used.
+
+### Field conflicts
+
+When multiple sources have the same field name, the output prefixes conflicting fields with the source name:
+
+```json
+{
+  "orders.name": "Order #123",
+  "customers.name": "Alice",
+  "customer_id": "42",
+  "amount": 99.50
+}
+```
+
+### Validation rules
+
+- `source` and `sources` cannot be defined together
+- Each source in `sources` must have a unique `name`
+- `join` is required when 2+ sources are defined
+- `join.type` must be one of: `inner`, `left`, `right`, `full`
+- `join.on` must not be empty
+- A single source in `sources` triggers a warning (use `source` instead)

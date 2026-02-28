@@ -18,6 +18,20 @@ docker compose up -d           # Start all services
 | Kafka (KRaft) | `localhost:9092` | Event broker |
 | Schema Registry | `localhost:8081` | Confluent Schema Registry |
 | PostgreSQL | `localhost:5432` | Sink database (user: `mako`, pass: `mako`) |
+| Vault | `localhost:8200` | Secret management (token: `mako-root-token`) |
 | Flink SQL | `localhost:8082` | Stream processing dashboard |
 | Kafka UI | `localhost:8080` | Web UI for topics and messages |
 | Adminer | `localhost:8083` | Database UI for PostgreSQL |
+
+## Vault
+
+Vault starts in **dev mode** with pre-loaded secrets for all services.
+See [docs/vault.md](vault.md) for full configuration details.
+
+```bash
+export VAULT_ADDR=http://localhost:8200
+export VAULT_TOKEN=mako-root-token
+
+vault kv list secret/mako/       # List all secret paths
+vault kv get secret/mako/postgres # Read PostgreSQL credentials
+```

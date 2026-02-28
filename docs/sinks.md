@@ -381,6 +381,42 @@ pipeline:
       export_partition_by: [year, month]
 ```
 
+## Kafka (franz-go)
+
+Sink using [franz-go](https://github.com/twmb/franz-go) (pure Go, zero CGO) to produce events to a Kafka topic. Uses the same producer implementation as the DLQ sink.
+
+```yaml
+sink:
+  type: kafka
+  topic: enriched-orders
+  config:
+    brokers: localhost:9092
+```
+
+Or as a secondary sink in multi-sink mode:
+
+```yaml
+sinks:
+  - name: kafka-output
+    type: kafka
+    topic: events.enriched
+    config:
+      brokers: ${KAFKA_BROKERS:-localhost:9092}
+```
+
+Features:
+- Async produce with `AllISRAcks` for durability
+- 1MB max batch size, 100ms linger for throughput
+- Headers propagated from source events
+- Automatic flush on pipeline shutdown
+
+### Configuration
+
+| Key | Default | Description |
+|---|---|---|
+| `topic` (YAML field) | -- | Target Kafka topic (required) |
+| `brokers` (in `config`) | `localhost:9092` | Comma-separated broker addresses |
+
 ## Secret Resolution (Vault)
 
 All sinks resolve credentials through a 4-step chain:
