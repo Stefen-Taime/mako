@@ -9,6 +9,8 @@ Stack Docker autonome pour developper et tester Mako contre de vrais services.
 | **Kafka** | `localhost:9092` | Broker KRaft (sans Zookeeper) |
 | **Schema Registry** | `localhost:8081` | Confluent Schema Registry |
 | **PostgreSQL** | `localhost:5432` | Base de donnees (user: `mako`, pass: `mako`, db: `mako`) |
+| **Prometheus** | `localhost:9091` | Metrics collection (scrapes Mako /metrics) |
+| **Grafana** | `localhost:3000` | Dashboards (admin / mako) |
 | **Flink JobManager** | `localhost:8082` | Flink Dashboard |
 | **Flink TaskManager** | — | Worker (4 task slots) |
 | **Kafka UI** | `localhost:8080` | Interface web pour Kafka + Schema Registry |
@@ -106,6 +108,22 @@ docker compose --profile sql run --rm flink-sql-client
 # SELECT * FROM orders;
 ```
 
+## Monitoring (Prometheus + Grafana)
+
+Prometheus scrape automatiquement les metriques du pipeline Mako sur `host.docker.internal:9090`.
+
+```bash
+# Verifier que Prometheus scrape bien
+curl http://localhost:9091/api/v1/targets
+
+# Ouvrir Grafana (admin / mako)
+open http://localhost:3000
+```
+
+Un dashboard Mako est provisionne automatiquement dans Grafana (dossier "Mako").
+
+Pour monitorer un pipeline sur un port different, editer `prometheus/prometheus.yml` et ajouter le target.
+
 ## Kafka UI
 
 Ouvrir http://localhost:8080 pour :
@@ -126,4 +144,6 @@ docker compose down -v    # Arrete et supprime les volumes (reset complet)
 - Flink: ~2GB RAM (jobmanager + taskmanager)
 - PostgreSQL: ~100MB RAM
 - Schema Registry: ~300MB RAM
-- **Total: ~3GB RAM minimum**
+- Prometheus: ~100MB RAM
+- Grafana: ~100MB RAM
+- **Total: ~3.2GB RAM minimum**

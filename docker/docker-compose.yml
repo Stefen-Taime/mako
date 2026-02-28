@@ -14,6 +14,8 @@
 #   - Schema Registry              localhost:8081
 #   - PostgreSQL                   localhost:5432
 #   - Vault (Secret Management)    localhost:8200
+#   - Prometheus (Metrics)         localhost:9091
+#   - Grafana (Dashboards)         localhost:3000
 #   - Flink JobManager             localhost:8082
 #   - Flink SQL Client             (interactive)
 #   - Kafka UI                     localhost:8080
@@ -127,6 +129,50 @@ services:
       retries: 10
       start_period: 10s
 
+  # ── Prometheus (Metrics collection) ─────────────────────
+  prometheus:
+    image: prom/prometheus:v2.51.0
+    hostname: prometheus
+    container_name: mako-prometheus
+    ports:
+      - "9091:9090"
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    healthcheck:
+      test: wget -qO- http://localhost:9090/-/healthy || exit 1
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  # ── Grafana (Dashboards) ──────────────────────────────
+  grafana:
+    image: grafana/grafana:10.4.1
+    hostname: grafana
+    container_name: mako-grafana
+    depends_on:
+      prometheus:
+        condition: service_healthy
+    ports:
+      - "3000:3000"
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: mako
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ../grafana/mako-dashboard.json:/var/lib/grafana/dashboards/mako-dashboard.json:ro
+      - grafana-data:/var/lib/grafana
+    healthcheck:
+      test: wget -qO- http://localhost:3000/api/health || exit 1
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
   # ── Flink JobManager ────────────────────────────────────
   flink-jobmanager:
     image: flink:1.18-java11
@@ -219,4 +265,6 @@ volumes:
   kafka-data:
   postgres-data:
   vault-data:
+  prometheus-data:
+  grafana-data:
   flink-data:

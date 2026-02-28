@@ -434,3 +434,116 @@ When multiple sources have the same field name, the output prefixes conflicting 
 - `join.type` must be one of: `inner`, `left`, `right`, `full`
 - `join.on` must not be empty
 - A single source in `sources` triggers a warning (use `source` instead)
+
+## Monitoring (Prometheus + Grafana)
+
+Mako exposes built-in Prometheus metrics for every pipeline. This section explains how to integrate with your existing Prometheus and Grafana stack.
+
+### 1. Enable metrics in the pipeline YAML
+
+```yaml
+pipeline:
+  name: order-events
+
+  monitoring:
+    freshnessSLA: 5m
+    alertChannel: "#data-alerts"
+    metrics:
+      enabled: true
+      port: 9090          # default: 9090
+```
+
+When `metrics.enabled: true`, Mako starts an HTTP server on the configured port with 4 endpoints:
+
+| Endpoint | Description |
+|---|---|
+| `GET /metrics` | Prometheus text format (`text/plain; version=0.0.4`) |
+| `GET /health` | Liveness probe (always 200 when server is up) |
+| `GET /ready` | Readiness probe (200 when pipeline is running, 503 otherwise) |
+| `GET /status` | JSON pipeline status with all counters and throughput |
+
+### 2. Configure Prometheus
+
+Add a scrape job in your `prometheus.yml` pointing to the Mako pipeline:
+
+```yaml
+# prometheus.yml
+scrape_configs:
+  - job_name: mako-pipelines
+    scrape_interval: 5s
+    static_configs:
+      - targets:
+          - localhost:9090        # single pipeline
+```
+
+For multiple pipelines on different ports:
+
+```yaml
+scrape_configs:
+  - job_name: mako-pipelines
+    scrape_interval: 5s
+    static_configs:
+      - targets:
+          - localhost:9090        # order-events pipeline
+          - localhost:9091        # payment-events pipeline
+          - localhost:9092        # user-activity pipeline
+```
+
+If using the Mako docker-compose stack (`docker/`), Prometheus is pre-configured to scrape `host.docker.internal:9090` automatically.
+
+### 3. Available metrics
+
+All metrics carry the label `pipeline="<name>"`.
+
+| Metric | Type | Description |
+|---|---|---|
+| `mako_events_in_total` | counter | Events read from source |
+| `mako_events_out_total` | counter | Events written to sink(s) |
+| `mako_errors_total` | counter | Total processing errors |
+| `mako_dlq_total` | counter | Events sent to DLQ |
+| `mako_schema_failures_total` | counter | Schema validation failures |
+| `mako_throughput_events_per_second` | gauge | Current throughput (events/s) |
+| `mako_uptime_seconds` | gauge | Pipeline uptime in seconds |
+| `mako_sink_latency_microseconds` | gauge | Last sink write latency |
+| `mako_pipeline_ready` | gauge | 1 if running, 0 otherwise |
+
+### 4. PromQL examples for Grafana
+
+**Real-time throughput:**
+```promql
+mako_throughput_events_per_second{pipeline="order-events"}
+```
+
+**Error rate (5-minute window):**
+```promql
+rate(mako_errors_total{pipeline="order-events"}[5m])
+```
+
+**Sink latency in milliseconds:**
+```promql
+mako_sink_latency_microseconds{pipeline="order-events"} / 1000
+```
+
+**Alert when pipeline is down:**
+```promql
+mako_pipeline_ready{pipeline="order-events"} == 0
+```
+
+**Events per minute (1-minute rate):**
+```promql
+rate(mako_events_in_total{pipeline="order-events"}[1m]) * 60
+```
+
+### 5. Local setup with Docker
+
+The `docker/` stack includes Prometheus and Grafana pre-configured:
+
+```bash
+cd docker/
+docker compose up -d prometheus grafana
+
+# Prometheus UI:  http://localhost:9091
+# Grafana UI:     http://localhost:3000  (admin / mako)
+```
+
+A Mako dashboard is auto-provisioned in Grafana under the "Mako" folder. Start any pipeline with `mako run` and the metrics appear automatically.

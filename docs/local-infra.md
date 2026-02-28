@@ -20,6 +20,8 @@ docker compose up -d           # Start all services
 | PostgreSQL | `localhost:5432` | Sink database (user: `mako`, pass: `mako`) |
 | Vault | `localhost:8200` | Secret management (token: `mako-root-token`) |
 | Flink SQL | `localhost:8082` | Stream processing dashboard |
+| Prometheus | `localhost:9091` | Metrics collection (scrapes Mako /metrics) |
+| Grafana | `localhost:3000` | Dashboards (admin / `mako`) |
 | Kafka UI | `localhost:8080` | Web UI for topics and messages |
 | Adminer | `localhost:8083` | Database UI for PostgreSQL |
 
