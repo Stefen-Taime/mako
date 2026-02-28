@@ -92,6 +92,8 @@ func NewFileSource(config map[string]any) *FileSource {
 		}
 	}
 
+	chanBuf := intFromConfig(config, "channel_buffer", 10000)
+
 	return &FileSource{
 		path:         path,
 		format:       format,
@@ -100,7 +102,7 @@ func NewFileSource(config map[string]any) *FileSource {
 		watch:        watch,
 		batchSize:    batchSize,
 		config:       config,
-		eventCh:      make(chan *pipeline.Event, 1000),
+		eventCh:      make(chan *pipeline.Event, chanBuf),
 	}
 }
 
@@ -300,8 +302,10 @@ func (s *FileSource) readJSONL(ctx context.Context, r io.Reader, filePath string
 }
 
 // readCSV reads CSV files. First row can be header.
+// RawValue is left nil — serialized lazily via Event.EnsureRawValue() when needed.
 func (s *FileSource) readCSV(ctx context.Context, r io.Reader, filePath string) error {
-	reader := csv.NewReader(r)
+	br := bufio.NewReaderSize(r, 256*1024) // 256 KB read buffer
+	reader := csv.NewReader(br)
 	reader.Comma = s.csvDelimiter
 	reader.LazyQuotes = true
 	reader.TrimLeadingSpace = true
@@ -349,11 +353,9 @@ func (s *FileSource) readCSV(ctx context.Context, r io.Reader, filePath string) 
 			}
 		}
 
-		rawJSON, _ := json.Marshal(value)
-
+		// RawValue left nil — serialized lazily by EnsureRawValue() when a sink needs it
 		event := &pipeline.Event{
 			Value:     value,
-			RawValue:  rawJSON,
 			Timestamp: time.Now(),
 			Topic:     filePath,
 			Partition: 0,
@@ -372,35 +374,38 @@ func (s *FileSource) readCSV(ctx context.Context, r io.Reader, filePath string) 
 	return nil
 }
 
-// readJSON reads a single JSON file (array of objects or single object).
+// readJSON reads a single JSON file (array of objects or single object)
+// using a streaming decoder — no io.ReadAll, constant memory for arrays.
 func (s *FileSource) readJSON(ctx context.Context, r io.Reader, filePath string) error {
-	data, err := io.ReadAll(r)
+	br := bufio.NewReaderSize(r, 256*1024)
+	dec := json.NewDecoder(br)
+
+	// Peek at first token to decide array vs object
+	tok, err := dec.Token()
 	if err != nil {
 		return fmt.Errorf("read json: %w", err)
 	}
 
-	// Trim whitespace
-	trimmed := strings.TrimSpace(string(data))
 	var offset int64
 
-	if strings.HasPrefix(trimmed, "[") {
-		// Array of objects
-		var records []map[string]any
-		if err := json.Unmarshal(data, &records); err != nil {
-			return fmt.Errorf("parse json array: %w", err)
-		}
-
-		for _, value := range records {
+	if delim, ok := tok.(json.Delim); ok && delim == '[' {
+		// Stream array elements one by one — constant memory
+		for dec.More() {
 			select {
 			case <-ctx.Done():
 				return nil
 			default:
 			}
 
-			rawJSON, _ := json.Marshal(value)
+			var value map[string]any
+			if err := dec.Decode(&value); err != nil {
+				fmt.Fprintf(os.Stderr, "[file] json array element %d: %v\n", offset, err)
+				offset++
+				continue
+			}
+
 			event := &pipeline.Event{
 				Value:     value,
-				RawValue:  rawJSON,
 				Timestamp: time.Now(),
 				Topic:     filePath,
 				Partition: 0,
@@ -410,20 +415,38 @@ func (s *FileSource) readJSON(ctx context.Context, r io.Reader, filePath string)
 			select {
 			case s.eventCh <- event:
 				offset++
+				s.lag.Store(int64(len(s.eventCh)))
 			case <-ctx.Done():
 				return nil
 			}
 		}
+		// consume closing ']'
+		if _, err := dec.Token(); err != nil && err != io.EOF {
+			return fmt.Errorf("read json closing bracket: %w", err)
+		}
 	} else {
-		// Single object
+		// First token was '{' or a scalar — reparse as single object.
+		// We need to re-read because the decoder already consumed the token.
+		// Use a small buffer: concatenate the already-consumed token + rest.
+		remaining, err := io.ReadAll(dec.Buffered())
+		if err != nil {
+			return fmt.Errorf("read json buffered: %w", err)
+		}
+		rest, err := io.ReadAll(br)
+		if err != nil {
+			return fmt.Errorf("read json rest: %w", err)
+		}
+		// Reconstruct: the token was '{', so prepend it
+		full := append([]byte("{"), remaining...)
+		full = append(full, rest...)
+
 		var value map[string]any
-		if err := json.Unmarshal(data, &value); err != nil {
+		if err := json.Unmarshal(full, &value); err != nil {
 			return fmt.Errorf("parse json object: %w", err)
 		}
 
 		event := &pipeline.Event{
 			Value:     value,
-			RawValue:  data,
 			Timestamp: time.Now(),
 			Topic:     filePath,
 			Partition: 0,

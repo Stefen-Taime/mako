@@ -7,6 +7,7 @@ package pipeline
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"sync"
@@ -29,6 +30,16 @@ type Event struct {
 	Offset    int64
 	Headers   map[string]string
 	Metadata  map[string]any
+}
+
+// EnsureRawValue lazily serializes Value to JSON if RawValue is nil.
+// This avoids expensive json.Marshal in hot paths (CSV, JSON streaming)
+// when the sink may not need the raw bytes at all.
+func (e *Event) EnsureRawValue() []byte {
+	if e.RawValue == nil && e.Value != nil {
+		e.RawValue, _ = json.Marshal(e.Value)
+	}
+	return e.RawValue
 }
 
 // Source reads events from an external system.
@@ -139,10 +150,19 @@ func (p *Pipeline) Start(ctx context.Context) error {
 		}
 	}
 
+	workers := 1
+	if p.spec.Sink.Batch != nil && p.spec.Sink.Batch.Workers > 0 {
+		workers = p.spec.Sink.Batch.Workers
+	}
+
 	p.wg.Add(1)
 	go func() {
 		defer p.wg.Done()
-		p.eventLoop(ctx, eventCh, batchSize, flushInterval)
+		if workers > 1 {
+			p.parallelEventLoop(ctx, eventCh, batchSize, flushInterval, workers)
+		} else {
+			p.eventLoop(ctx, eventCh, batchSize, flushInterval)
+		}
 		close(p.done)
 	}()
 
@@ -231,6 +251,119 @@ func (p *Pipeline) eventLoop(ctx context.Context, eventCh <-chan *Event, batchSi
 			event.Value = result
 			batch = append(batch, event)
 
+			if len(batch) >= batchSize {
+				flush(ctx)
+			}
+
+		case <-ticker.C:
+			flush(ctx)
+		}
+	}
+}
+
+// parallelEventLoop fans out events to N workers for transform processing,
+// then collects results into a single batch writer. The transform.Chain is
+// stateless (pure functions), so sharing it across goroutines is safe.
+func (p *Pipeline) parallelEventLoop(ctx context.Context, eventCh <-chan *Event, batchSize int, flushInterval time.Duration, workers int) {
+	// transformed channel collects processed events from all workers
+	transformed := make(chan *Event, batchSize)
+
+	var workerWg sync.WaitGroup
+	workerWg.Add(workers)
+
+	for i := 0; i < workers; i++ {
+		go func() {
+			defer workerWg.Done()
+			for event := range eventCh {
+				p.eventsIn.Add(1)
+				p.lastEvent.Store(time.Now())
+
+				// Schema validation (if configured)
+				if p.schemaValidator != nil && p.schemaValidator.Enforce() {
+					vResult, vErr := p.schemaValidator.Validate(ctx, event.Value)
+					if vErr != nil {
+						p.errors.Add(1)
+						p.schemaFails.Add(1)
+						p.handleTransformError(ctx, fmt.Errorf("schema validation: %w", vErr), event)
+						continue
+					}
+					if !vResult.Valid {
+						p.schemaFails.Add(1)
+						p.handleTransformError(ctx, fmt.Errorf("schema validation failed: %v", vResult.Errors), event)
+						continue
+					}
+				}
+
+				// Apply transform chain (thread-safe: stateless functions)
+				result, err := p.chain.Apply(event.Value)
+				if err != nil {
+					p.errors.Add(1)
+					p.handleTransformError(ctx, err, event)
+					continue
+				}
+				if result == nil {
+					continue
+				}
+				event.Value = result
+
+				select {
+				case transformed <- event:
+				case <-ctx.Done():
+					return
+				}
+			}
+		}()
+	}
+
+	// Close transformed channel when all workers finish
+	go func() {
+		workerWg.Wait()
+		close(transformed)
+	}()
+
+	// Single batch writer — collects from transformed channel
+	batch := make([]*Event, 0, batchSize)
+	ticker := time.NewTicker(flushInterval)
+	defer ticker.Stop()
+
+	flush := func(writeCtx context.Context) {
+		if len(batch) == 0 {
+			return
+		}
+		anyFailed := false
+		for _, sink := range p.sinks {
+			start := time.Now()
+			if err := sink.Write(writeCtx, batch); err != nil {
+				log.Printf("[pipeline] sink %s write error: %v", sink.Name(), err)
+				p.errors.Add(1)
+				p.handleError(writeCtx, err, batch)
+				anyFailed = true
+				continue
+			}
+			p.sinkLatency.Store(time.Since(start).Microseconds())
+		}
+		if !anyFailed {
+			p.eventsOut.Add(int64(len(batch)))
+		}
+		batch = batch[:0]
+	}
+
+	for {
+		select {
+		case <-ctx.Done():
+			drainCtx, drainCancel := context.WithTimeout(context.Background(), 30*time.Second)
+			flush(drainCtx)
+			drainCancel()
+			return
+
+		case event, ok := <-transformed:
+			if !ok {
+				drainCtx, drainCancel := context.WithTimeout(context.Background(), 30*time.Second)
+				flush(drainCtx)
+				drainCancel()
+				return
+			}
+			batch = append(batch, event)
 			if len(batch) >= batchSize {
 				flush(ctx)
 			}

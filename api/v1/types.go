@@ -207,6 +207,7 @@ type BatchSpec struct {
 	Size     int    `yaml:"size,omitempty" json:"size,omitempty"`         // records per batch
 	Interval string `yaml:"interval,omitempty" json:"interval,omitempty"` // flush interval
 	MaxBytes int    `yaml:"maxBytes,omitempty" json:"maxBytes,omitempty"`
+	Workers  int    `yaml:"workers,omitempty" json:"workers,omitempty"`   // parallel transform workers (default: 1)
 }
 
 // ═══════════════════════════════════════════

@@ -21,6 +21,7 @@ import (
 	"syscall"
 	"time"
 
+	v1 "github.com/Stefen-Taime/mako/api/v1"
 	"github.com/Stefen-Taime/mako/internal/cli"
 	"github.com/Stefen-Taime/mako/pkg/alerting"
 	"github.com/Stefen-Taime/mako/pkg/codegen"
@@ -567,6 +568,24 @@ func cmdRun(args []string) error {
 			src = source.NewDuckDBSource(p.Source.Config)
 		default:
 			return fmt.Errorf("unsupported source type for run: %s (supported: kafka, file, postgres_cdc, http, duckdb)", p.Source.Type)
+		}
+	}
+
+	// Auto-tune batch size for bulk sources (file, http, duckdb) when not explicitly configured
+	isBulkSource := false
+	if len(p.Sources) == 0 {
+		switch p.Source.Type {
+		case "file", "http", "duckdb":
+			isBulkSource = true
+		}
+	}
+	if isBulkSource {
+		if p.Sink.Batch == nil {
+			p.Sink.Batch = &v1.BatchSpec{}
+		}
+		if p.Sink.Batch.Size == 0 {
+			p.Sink.Batch.Size = 5000
+			fmt.Fprintf(os.Stderr, "⚡ Auto-tuned batch size to %d for bulk source (%s)\n", p.Sink.Batch.Size, p.Source.Type)
 		}
 	}
 
