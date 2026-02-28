@@ -1,11 +1,13 @@
 // Package source implements input adapters for Mako pipelines.
 //
 // FileSource reads events from local files or HTTP/HTTPS URLs
-// (JSONL, CSV, JSON).
+// (JSONL, CSV, JSON). Gzip-compressed files (.gz) are transparently
+// decompressed during streaming.
 package source
 
 import (
 	"bufio"
+	"compress/gzip"
 	"context"
 	"encoding/csv"
 	"encoding/json"
@@ -28,6 +30,8 @@ import (
 
 // FileSource reads events from local files or remote HTTP/HTTPS URLs.
 // Supports JSONL (.jsonl, .json), CSV (.csv), and line-delimited formats.
+// Gzip-compressed files (.gz) are transparently decompressed in streaming
+// mode, keeping memory usage constant regardless of file size.
 //
 // Configuration via YAML:
 //
@@ -35,6 +39,8 @@ import (
 //	  type: file
 //	  config:
 //	    path: /data/events.jsonl                                           # local file
+//	    # path: /data/events.jsonl.gz                                     # gzip compressed
+//	    # path: /data/events/*.jsonl.gz                                   # glob + gzip
 //	    # path: /data/events/*.jsonl                                      # glob pattern
 //	    # path: https://raw.githubusercontent.com/user/repo/main/data.json # HTTP URL
 //	    format: jsonl                      # jsonl|csv|json (auto-detected from extension)
@@ -66,9 +72,14 @@ func NewFileSource(config map[string]any) *FileSource {
 	watch := boolFromConfig(config, "watch", false)
 	batchSize := intFromConfig(config, "batch_size", 1000)
 
-	// Auto-detect format from extension if not specified
+	// Auto-detect format from extension if not specified.
+	// For .gz files, strip the gz suffix and detect the inner format
+	// (e.g. events.csv.gz → csv, data.jsonl.gz → jsonl).
 	if format == "" && path != "" {
-		ext := strings.ToLower(filepath.Ext(path))
+		name := strings.ToLower(path)
+		// Strip .gz to reach the real format extension
+		name = strings.TrimSuffix(name, ".gz")
+		ext := filepath.Ext(name)
 		switch ext {
 		case ".csv":
 			format = "csv"
@@ -109,6 +120,11 @@ func NewFileSource(config map[string]any) *FileSource {
 // isURL returns true if the path looks like an HTTP/HTTPS URL.
 func isURL(path string) bool {
 	return strings.HasPrefix(path, "http://") || strings.HasPrefix(path, "https://")
+}
+
+// isGzipped returns true if the path ends with .gz (case-insensitive).
+func isGzipped(path string) bool {
+	return strings.HasSuffix(strings.ToLower(path), ".gz")
 }
 
 // Open validates the file source configuration.
@@ -205,6 +221,8 @@ func (s *FileSource) readLoop(ctx context.Context) {
 }
 
 // readFile reads a single file and emits events.
+// If the file has a .gz extension, it is transparently decompressed
+// via gzip streaming — the full file is never loaded into memory.
 func (s *FileSource) readFile(ctx context.Context, filePath string) error {
 	f, err := os.Open(filePath)
 	if err != nil {
@@ -212,26 +230,41 @@ func (s *FileSource) readFile(ctx context.Context, filePath string) error {
 	}
 	defer f.Close()
 
+	var r io.Reader = f
+	if isGzipped(filePath) {
+		gz, err := gzip.NewReader(f)
+		if err != nil {
+			return fmt.Errorf("gzip open %s: %w", filePath, err)
+		}
+		defer gz.Close()
+		r = gz
+	}
+
 	switch s.format {
 	case "csv":
-		return s.readCSV(ctx, f, filePath)
+		return s.readCSV(ctx, r, filePath)
 	case "json":
-		return s.readJSON(ctx, f, filePath)
+		return s.readJSON(ctx, r, filePath)
 	case "parquet":
 		return fmt.Errorf("parquet support requires apache/parquet-go (use jsonl or csv)")
 	default: // jsonl, ndjson
-		return s.readJSONL(ctx, f, filePath)
+		return s.readJSONL(ctx, r, filePath)
 	}
 }
 
 // readURL fetches data from an HTTP/HTTPS URL and reads it using the
 // appropriate format reader (json, csv, jsonl). The response body is
 // streamed directly to the reader — no temp file is created.
+// If the URL path ends with .gz or the server returns Content-Encoding: gzip,
+// the stream is transparently decompressed.
 func (s *FileSource) readURL(ctx context.Context, url string) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return fmt.Errorf("create request: %w", err)
 	}
+
+	// Disable automatic gzip handling so we can detect .gz URLs ourselves
+	req.Header.Set("Accept-Encoding", "identity")
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -243,13 +276,23 @@ func (s *FileSource) readURL(ctx context.Context, url string) error {
 		return fmt.Errorf("url returned HTTP %d", resp.StatusCode)
 	}
 
+	var r io.Reader = resp.Body
+	if isGzipped(url) || resp.Header.Get("Content-Encoding") == "gzip" {
+		gz, err := gzip.NewReader(resp.Body)
+		if err != nil {
+			return fmt.Errorf("gzip open url %s: %w", url, err)
+		}
+		defer gz.Close()
+		r = gz
+	}
+
 	switch s.format {
 	case "csv":
-		return s.readCSV(ctx, resp.Body, url)
+		return s.readCSV(ctx, r, url)
 	case "json":
-		return s.readJSON(ctx, resp.Body, url)
+		return s.readJSON(ctx, r, url)
 	default: // jsonl, ndjson
-		return s.readJSONL(ctx, resp.Body, url)
+		return s.readJSONL(ctx, r, url)
 	}
 }
 

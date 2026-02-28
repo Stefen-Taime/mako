@@ -19,24 +19,43 @@ Features:
 - Header propagation
 - Graceful shutdown with offset commit
 
-## File (JSONL, CSV, JSON + HTTP URLs)
+## File (JSONL, CSV, JSON + HTTP URLs + Gzip)
 
-Read events from local files **or remote HTTP/HTTPS URLs**. Useful for backfill, testing, and batch processing.
+Read events from local files **or remote HTTP/HTTPS URLs**. Supports **transparent gzip decompression** for large compressed files. Useful for backfill, testing, and batch processing.
 
 ```yaml
 source:
   type: file
   config:
     path: /data/events.jsonl           # single file
+    # path: /data/events.jsonl.gz      # gzip compressed (any size)
     # path: /data/events/*.jsonl       # glob pattern supported
+    # path: /data/events/*.csv.gz      # glob + gzip
     format: jsonl                       # jsonl | csv | json (auto-detected)
     csv_header: true                    # first line is header (CSV)
     csv_delimiter: ","                  # field separator (CSV)
 ```
 
+### Gzip support
+
+Files ending in `.gz` are transparently decompressed in streaming mode. The inner format is auto-detected by stripping the `.gz` suffix (e.g. `events.csv.gz` → CSV, `data.jsonl.gz` → JSONL).
+
+```yaml
+source:
+  type: file
+  config:
+    path: /data/large-dataset.jsonl.gz   # 12 GB gzip → ~50-100 MB memory
+```
+
+- Decompression is streaming — the file is **never loaded entirely into memory**
+- Memory usage stays constant (~50-100 MB) regardless of file size
+- Works with all formats: `.jsonl.gz`, `.csv.gz`, `.json.gz`
+- Works with glob patterns: `/data/*.jsonl.gz`
+- Works with HTTP/HTTPS URLs ending in `.gz`
+
 ### HTTP/HTTPS URLs
 
-Point `path` directly to a remote file — no download needed. The response body is streamed directly to the reader (no temp file).
+Point `path` directly to a remote file — no download needed. The response body is streamed directly to the reader (no temp file). Gzip-compressed URLs (`.gz` path or `Content-Encoding: gzip` header) are transparently decompressed.
 
 ```yaml
 source:
@@ -46,13 +65,15 @@ source:
     format: json
 ```
 
-Works with any format (JSON, JSONL, CSV). At `Open()` a HEAD request validates reachability; at `Read()` a GET streams the data.
+Works with any format (JSON, JSONL, CSV) and gzip variants. At `Open()` a HEAD request validates reachability; at `Read()` a GET streams the data.
 
 ### Supported formats
 
 - **JSONL** (`.jsonl`, `.ndjson`): one JSON object per line
 - **CSV** (`.csv`): with optional header row, configurable delimiter
 - **JSON** (`.json`): single object or array of objects
+
+All formats support `.gz` compression (e.g. `.jsonl.gz`, `.csv.gz`, `.json.gz`).
 
 ### Auto-termination
 

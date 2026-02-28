@@ -68,7 +68,7 @@ mako generate pipeline.yaml --tf > infra.tf
 
 | Concept | Mako |
 |---|---|
-| Sources | Kafka, File, PostgreSQL CDC, HTTP/API, DuckDB — [docs](docs/sources.md) |
+| Sources | Kafka, File (+ gzip), PostgreSQL CDC, HTTP/API, DuckDB — [docs](docs/sources.md) |
 | Transforms | hash, mask, filter, rename, dedupe + WASM plugins — [docs](docs/transforms.md) |
 | Sinks | PostgreSQL, Snowflake, BigQuery, ClickHouse, DuckDB, S3, GCS, Kafka — [docs](docs/sinks.md) |
 | Schema | Confluent Schema Registry (JSON Schema + Avro) — [docs](docs/observability.md#schema-enforcement) |
@@ -166,7 +166,7 @@ mako/
 │   │   ├── transform.go            # Transform implementations
 │   │   └── wasm.go                 # WASM plugin runtime (wazero)
 │   ├── source/
-│   │   ├── file.go                 # File source (JSONL, CSV, JSON)
+│   │   ├── file.go                 # File source (JSONL, CSV, JSON + gzip)
 │   │   ├── postgres_cdc.go         # PostgreSQL CDC source (pgx + pglogrepl)
 │   │   ├── http.go                 # HTTP/API source (REST, pagination, OAuth2)
 │   │   └── duckdb.go              # DuckDB source (SQL, Parquet/CSV/JSON reading)
@@ -260,7 +260,7 @@ go test -bench=. -benchmem ./...
 - [x] Snowflake sink (gosnowflake) + flatten mode (auto-typed columns)
 - [x] BigQuery sink (streaming inserter)
 - [x] Schema Registry validation (JSON Schema)
-- [x] File source (JSONL, CSV, JSON)
+- [x] File source (JSONL, CSV, JSON + transparent gzip decompression)
 - [x] Prometheus metrics (/metrics)
 - [x] Health/readiness probes (/health, /ready)
 - [x] Pipeline status API (/status)
