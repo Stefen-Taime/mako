@@ -362,7 +362,36 @@ The generated SQL:
 COPY "export_staging" TO '/data/output/events/' (FORMAT PARQUET, PARTITION_BY (year, month))
 ```
 
-For remote paths (`s3://`, `gs://`), the `httpfs` extension is loaded automatically at `Open()`.
+### Cloud export (S3 / GCS / Azure)
+
+For remote export paths (`s3://`, `gs://`, `az://`), the `httpfs` extension is loaded automatically at `Open()` and cloud credentials are configured from the YAML config or environment variables.
+
+```yaml
+sink:
+  type: duckdb
+  database: ":memory:"
+  table: staging
+  config:
+    create_table: true
+    export_path: s3://my-bucket/output/events.parquet
+    export_format: parquet
+
+    # S3 credentials (or use AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY env vars)
+    s3_access_key_id: AKIAIOSFODNN7EXAMPLE
+    s3_secret_access_key: wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY
+    s3_region: eu-west-1
+```
+
+| Config key | Env var | Description |
+|---|---|---|
+| `s3_access_key_id` | `AWS_ACCESS_KEY_ID` | S3 access key |
+| `s3_secret_access_key` | `AWS_SECRET_ACCESS_KEY` | S3 secret key |
+| `s3_region` | `AWS_REGION` | S3 region (default: `us-east-1`) |
+| `s3_endpoint` | `AWS_ENDPOINT_URL` | Custom S3 endpoint (MinIO, LocalStack) |
+| `gcs_service_account_key` | `GOOGLE_APPLICATION_CREDENTIALS` | Path to GCS service account JSON key |
+| `azure_account_name` | `AZURE_STORAGE_ACCOUNT` | Azure storage account name |
+| `azure_account_key` | `AZURE_STORAGE_KEY` | Azure storage account key |
+| `azure_connection_string` | `AZURE_STORAGE_CONNECTION_STRING` | Azure full connection string |
 
 ### Example: DuckDB query to partitioned Parquet
 

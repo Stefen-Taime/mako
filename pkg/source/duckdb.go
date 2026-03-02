@@ -12,6 +12,7 @@ import (
 
 	_ "github.com/marcboeker/go-duckdb"
 
+	"github.com/Stefen-Taime/mako/pkg/duckdbext"
 	"github.com/Stefen-Taime/mako/pkg/pipeline"
 )
 
@@ -64,6 +65,9 @@ func NewDuckDBSource(cfg map[string]any) *DuckDBSource {
 }
 
 // Open establishes the DuckDB connection.
+// If the query or table references remote paths (s3://, gs://, az://),
+// the httpfs extension is automatically loaded and cloud credentials
+// are configured from the YAML config or environment variables.
 func (s *DuckDBSource) Open(ctx context.Context) error {
 	if s.query == "" && s.table == "" {
 		return fmt.Errorf("duckdb source: either query or table is required")
@@ -77,6 +81,18 @@ func (s *DuckDBSource) Open(ctx context.Context) error {
 	if err := db.PingContext(ctx); err != nil {
 		db.Close()
 		return fmt.Errorf("duckdb ping: %w", err)
+	}
+
+	// Auto-detect cloud paths in query/table and load httpfs + credentials.
+	queryOrTable := s.query
+	if queryOrTable == "" {
+		queryOrTable = s.table
+	}
+	if duckdbext.NeedsHTTPFSQuery(queryOrTable) || duckdbext.NeedsHTTPFS(queryOrTable) {
+		cc := duckdbext.CloudConfigFromMap(s.config)
+		if err := duckdbext.LoadCloudExtensions(ctx, db, cc, "source"); err != nil {
+			fmt.Fprintf(os.Stderr, "[duckdb] warning: %v\n", err)
+		}
 	}
 
 	s.db = db

@@ -16,6 +16,7 @@
   <a href="docs/sources.md">Sources</a> &middot;
   <a href="docs/transforms.md">Transforms</a> &middot;
   <a href="docs/sinks.md">Sinks</a> &middot;
+  <a href="docs/workflows.md">Workflows</a> &middot;
   <a href="docs/observability.md">Observability</a> &middot;
   <a href="docs/helm.md">Helm</a> &middot;
   <a href="docs/codegen.md">Codegen</a> &middot;
@@ -54,6 +55,7 @@ pipeline:
 mako validate pipeline.yaml
 mako dry-run pipeline.yaml < events.jsonl
 mako run pipeline.yaml
+mako workflow workflow.yaml          # DAG orchestration
 mako generate pipeline.yaml --k8s > deploy.yaml
 mako generate pipeline.yaml --tf > infra.tf
 ```
@@ -68,12 +70,13 @@ mako generate pipeline.yaml --tf > infra.tf
 
 | Concept | Mako |
 |---|---|
-| Sources | Kafka, File (+ gzip), PostgreSQL CDC, HTTP/API, DuckDB — [docs](docs/sources.md) |
+| Sources | Kafka, File (+ gzip + Parquet), PostgreSQL CDC, HTTP/API, DuckDB — [docs](docs/sources.md) |
 | Transforms | hash, mask, filter, rename, dedupe + WASM plugins — [docs](docs/transforms.md) |
 | Sinks | PostgreSQL, Snowflake, BigQuery, ClickHouse, DuckDB, S3, GCS, Kafka — [docs](docs/sinks.md) |
 | Schema | Confluent Schema Registry (JSON Schema + Avro) — [docs](docs/observability.md#schema-enforcement) |
 | Observability | Prometheus /metrics, /health, /ready, /status — [docs](docs/observability.md) |
 | Deploy | Helm chart, `mako generate --k8s` + `--tf` — [helm](docs/helm.md) / [codegen](docs/codegen.md) |
+| Workflows | DAG orchestration: multi-pipeline steps with dependency resolution — [docs](docs/workflows.md) |
 | Fault tolerance | DLQ + retries + exponential backoff |
 | CI | GitHub Actions with integration tests (Kafka, PG, Schema Registry) |
 
@@ -99,6 +102,9 @@ echo '{"email":"john@test.com","amount":99.99,"status":"completed","environment"
 
 # Run pipeline (Kafka -> transforms -> sink)
 ./bin/mako run pipeline.yaml
+
+# Run a workflow (DAG of multiple pipelines)
+./bin/mako workflow workflow.yaml
 
 # Generate Kubernetes manifests
 ./bin/mako generate pipeline.yaml --k8s > deploy.yaml
@@ -166,10 +172,10 @@ mako/
 │   │   ├── transform.go            # Transform implementations
 │   │   └── wasm.go                 # WASM plugin runtime (wazero)
 │   ├── source/
-│   │   ├── file.go                 # File source (JSONL, CSV, JSON + gzip)
+│   │   ├── file.go                 # File source (JSONL, CSV, JSON, Parquet + gzip)
 │   │   ├── postgres_cdc.go         # PostgreSQL CDC source (pgx + pglogrepl)
 │   │   ├── http.go                 # HTTP/API source (REST, pagination, OAuth2)
-│   │   └── duckdb.go              # DuckDB source (SQL, Parquet/CSV/JSON reading)
+│   │   └── duckdb.go              # DuckDB source (SQL, Parquet/CSV/JSON + S3/GCS/Azure)
 │   ├── sink/
 │   │   ├── sink.go                 # Stdout, File sinks + BuildFromSpec
 │   │   ├── postgres.go             # PostgreSQL sink (pgx)
@@ -181,6 +187,8 @@ mako/
 │   │   ├── duckdb.go              # DuckDB sink (embedded, export to Parquet/CSV)
 │   │   ├── encode.go               # Shared Parquet + CSV encoders
 │   │   └── resolve.go              # Secret resolution chain (config → env → Vault)
+│   ├── duckdbext/cloud.go          # Shared DuckDB httpfs + cloud credentials (S3/GCS/Azure)
+│   ├── workflow/engine.go          # DAG workflow engine (parallel step execution)
 │   ├── kafka/kafka.go              # Kafka source + sink (franz-go)
 │   ├── schema/registry.go          # Schema Registry client + validator
 │   ├── observability/server.go     # Prometheus metrics + health + status HTTP
@@ -193,6 +201,7 @@ mako/
 │   ├── sources.md
 │   ├── transforms.md
 │   ├── sinks.md
+│   ├── workflows.md
 │   ├── observability.md
 │   ├── helm.md
 │   ├── codegen.md
@@ -216,6 +225,7 @@ mako/
 │   ├── duckdb/                     # DuckDB pipeline examples
 │   │   ├── pipeline-parquet-to-duckdb.yaml
 │   │   └── pipeline-duckdb-to-parquet.yaml
+│   ├── workflow-demo/              # Workflow DAG example (HTTP→DuckDB→Postgres)
 │   ├── wasm-plugin/                # WASM plugin example (TinyGo) — STANDBY
 │   │   ├── main.go
 │   │   └── pipeline.yaml
@@ -281,6 +291,9 @@ go test -bench=. -benchmem ./...
 - [x] WASM runtime hardening (skip `_start` for library-style plugins)
 - [x] DuckDB embedded source (SQL queries, native Parquet/CSV/JSON reading)
 - [x] DuckDB embedded sink (auto-table, schema evolution, COPY TO export)
+- [x] Parquet file source (native reading via parquet-go, local + HTTP)
+- [x] DuckDB cloud storage (S3/GCS/Azure via httpfs with auto-credential config)
+- [x] Workflow engine (DAG orchestration, parallel steps, failure policies)
 
 ---
 

@@ -12,6 +12,7 @@ import (
 
 	_ "github.com/marcboeker/go-duckdb"
 
+	"github.com/Stefen-Taime/mako/pkg/duckdbext"
 	"github.com/Stefen-Taime/mako/pkg/pipeline"
 )
 
@@ -108,15 +109,11 @@ func (s *DuckDBSink) Open(ctx context.Context) error {
 		return fmt.Errorf("duckdb sink ping: %w", err)
 	}
 
-	// Load extensions for remote export paths (S3/GCS)
-	if strings.HasPrefix(s.exportPath, "s3://") {
-		if _, err := db.ExecContext(ctx, "INSTALL httpfs; LOAD httpfs;"); err != nil {
-			fmt.Fprintf(os.Stderr, "[duckdb] warning: httpfs extension: %v\n", err)
-		}
-	}
-	if strings.HasPrefix(s.exportPath, "gs://") || strings.HasPrefix(s.exportPath, "gcs://") {
-		if _, err := db.ExecContext(ctx, "INSTALL httpfs; LOAD httpfs;"); err != nil {
-			fmt.Fprintf(os.Stderr, "[duckdb] warning: httpfs extension: %v\n", err)
+	// Load httpfs extension + cloud credentials for remote export paths (S3/GCS/Azure)
+	if duckdbext.NeedsHTTPFS(s.exportPath) {
+		cc := duckdbext.CloudConfigFromMap(s.config)
+		if err := duckdbext.LoadCloudExtensions(ctx, db, cc, "sink"); err != nil {
+			fmt.Fprintf(os.Stderr, "[duckdb] warning: %v\n", err)
 		}
 	}
 

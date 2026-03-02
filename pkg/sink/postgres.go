@@ -289,7 +289,10 @@ func (s *PostgresSink) ensureFlatTable(ctx context.Context, events []*pipeline.E
 		for _, k := range colNames {
 			colDefs = append(colDefs, fmt.Sprintf("%s %s", pgQuoteIdent(k), pgColumnType(newKeys[k])))
 		}
-		colDefs = append(colDefs, "loaded_at TIMESTAMPTZ DEFAULT NOW()")
+		// Only add loaded_at if the source data doesn't already contain it
+		if _, hasLoadedAt := newKeys["loaded_at"]; !hasLoadedAt {
+			colDefs = append(colDefs, "loaded_at TIMESTAMPTZ DEFAULT NOW()")
+		}
 
 		createDDL := fmt.Sprintf("CREATE TABLE IF NOT EXISTS %s (\n\t%s\n)",
 			qualifiedTable, strings.Join(colDefs, ",\n\t"))

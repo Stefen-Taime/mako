@@ -19,7 +19,7 @@ Features:
 - Header propagation
 - Graceful shutdown with offset commit
 
-## File (JSONL, CSV, JSON + HTTP URLs + Gzip)
+## File (JSONL, CSV, JSON, Parquet + HTTP URLs + Gzip)
 
 Read events from local files **or remote HTTP/HTTPS URLs**. Supports **transparent gzip decompression** for large compressed files. Useful for backfill, testing, and batch processing.
 
@@ -31,7 +31,7 @@ source:
     # path: /data/events.jsonl.gz      # gzip compressed (any size)
     # path: /data/events/*.jsonl       # glob pattern supported
     # path: /data/events/*.csv.gz      # glob + gzip
-    format: jsonl                       # jsonl | csv | json (auto-detected)
+    format: jsonl                       # jsonl | csv | json | parquet (auto-detected)
     csv_header: true                    # first line is header (CSV)
     csv_delimiter: ","                  # field separator (CSV)
 ```
@@ -72,8 +72,48 @@ Works with any format (JSON, JSONL, CSV) and gzip variants. At `Open()` a HEAD r
 - **JSONL** (`.jsonl`, `.ndjson`): one JSON object per line
 - **CSV** (`.csv`): with optional header row, configurable delimiter, variable field count supported
 - **JSON** (`.json`): single object or array of objects
+- **Parquet** (`.parquet`): columnar format with typed columns (see below)
 
-All formats support `.gz` compression (e.g. `.jsonl.gz`, `.csv.gz`, `.json.gz`).
+JSONL, CSV, and JSON formats support `.gz` compression (e.g. `.jsonl.gz`, `.csv.gz`, `.json.gz`).
+
+### Parquet support
+
+Native Parquet reading via [parquet-go](https://github.com/parquet-go/parquet-go). Each row becomes a `map[string]any` event with typed values (no string conversion).
+
+```yaml
+source:
+  type: file
+  config:
+    path: /data/output/users.parquet
+    format: parquet                     # auto-detected from .parquet extension
+```
+
+Type mapping (Parquet physical type to Go type):
+
+| Parquet type | Go type |
+|---|---|
+| `BOOLEAN` | `bool` |
+| `INT32` | `int64` |
+| `INT64` | `int64` |
+| `FLOAT` | `float64` |
+| `DOUBLE` | `float64` |
+| `BYTE_ARRAY`, `FIXED_LEN_BYTE_ARRAY` | `string` |
+
+Nested column paths are flattened with dots (e.g. `address.city`).
+
+**Local files** use `os.File` directly (zero-copy random access via `io.ReaderAt`).
+**HTTP URLs** download the file into memory first (Parquet requires random access).
+
+```yaml
+# Read Parquet from HTTP URL
+source:
+  type: file
+  config:
+    path: https://example.com/data/events.parquet
+    format: parquet
+```
+
+Parquet files do not support gzip wrapping (`.parquet.gz`) — Parquet has its own internal compression (snappy, zstd, gzip).
 
 ### CSV handling
 
@@ -319,9 +359,17 @@ source:
 DuckDB can read external files directly via SQL — no separate file source needed:
 
 ```yaml
-# Read Parquet files (local or S3)
+# Read Parquet files (local)
 query: "SELECT * FROM read_parquet('/data/*.parquet')"
+
+# Read from S3
 query: "SELECT * FROM read_parquet('s3://bucket/path/*.parquet')"
+
+# Read from GCS
+query: "SELECT * FROM read_parquet('gs://bucket/path/*.parquet')"
+
+# Read from Azure Blob
+query: "SELECT * FROM read_parquet('az://container/path/*.parquet')"
 
 # Read CSV files
 query: "SELECT * FROM read_csv('/data/events.csv', header=true)"
@@ -332,6 +380,35 @@ query: "SELECT * FROM read_json('/data/events.json')"
 # Analytical queries with DuckDB SQL
 query: "SELECT user_id, count(*) as cnt, sum(amount) as total FROM read_parquet('/data/*.parquet') GROUP BY user_id"
 ```
+
+### Cloud storage (S3 / GCS / Azure)
+
+When the query or table references a remote path (`s3://`, `gs://`, `az://`, etc.), the `httpfs` extension is **automatically loaded** and cloud credentials are configured from the YAML config or environment variables.
+
+```yaml
+source:
+  type: duckdb
+  config:
+    database: ":memory:"
+    query: "SELECT * FROM read_parquet('s3://my-bucket/data/*.parquet')"
+
+    # S3 credentials (or use AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY env vars)
+    s3_access_key_id: AKIAIOSFODNN7EXAMPLE
+    s3_secret_access_key: wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY
+    s3_region: eu-west-1
+    # s3_endpoint: http://localhost:9000   # MinIO / LocalStack
+```
+
+| Config key | Env var | Description |
+|---|---|---|
+| `s3_access_key_id` | `AWS_ACCESS_KEY_ID` | S3 access key |
+| `s3_secret_access_key` | `AWS_SECRET_ACCESS_KEY` | S3 secret key |
+| `s3_region` | `AWS_REGION` | S3 region (default: `us-east-1`) |
+| `s3_endpoint` | `AWS_ENDPOINT_URL` | Custom S3 endpoint (MinIO, LocalStack) |
+| `gcs_service_account_key` | `GOOGLE_APPLICATION_CREDENTIALS` | Path to GCS service account JSON key |
+| `azure_account_name` | `AZURE_STORAGE_ACCOUNT` | Azure storage account name |
+| `azure_account_key` | `AZURE_STORAGE_KEY` | Azure storage account key |
+| `azure_connection_string` | `AZURE_STORAGE_CONNECTION_STRING` | Azure full connection string |
 
 ### Auto-termination
 

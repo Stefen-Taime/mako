@@ -34,6 +34,7 @@ import (
 	"github.com/Stefen-Taime/mako/pkg/sink"
 	"github.com/Stefen-Taime/mako/pkg/source"
 	"github.com/Stefen-Taime/mako/pkg/transform"
+	"github.com/Stefen-Taime/mako/pkg/workflow"
 )
 
 func main() {
@@ -62,6 +63,8 @@ func main() {
 		err = cmdGenerate(args)
 	case "run":
 		err = cmdRun(args)
+	case "workflow":
+		err = cmdWorkflow(args)
 	case "dry-run":
 		err = cmdDryRun(args)
 	case "version":
@@ -86,9 +89,10 @@ func printUsage() {
 
 Commands:
   init                         Create a starter pipeline.yaml
-  validate <file|dir>          Validate pipeline specification
+  validate <file|dir>          Validate pipeline or workflow specification
   apply    <file|dir>          Deploy pipeline to Kubernetes
   run      <file> [--config]   Run pipeline locally (Source -> Transforms -> Sink)
+  workflow <file>              Run a multi-pipeline workflow (DAG)
   generate <file> [--k8s|--tf] Generate K8s manifests or Terraform
   dry-run  <file>              Process sample data locally (stdin)
   status   [name]              Show running pipeline status
@@ -98,9 +102,11 @@ Commands:
 Examples:
   mako init
   mako validate pipeline.yaml
+  mako validate workflow.yaml
   mako validate pipelines/
   mako apply pipeline.yaml
   mako run pipeline.yaml
+  mako workflow etl-daily.yaml
   mako generate pipeline.yaml --k8s
   mako dry-run pipeline.yaml < events.jsonl
   mako status order-events
@@ -224,6 +230,18 @@ func cmdValidate(args []string) error {
 		return err
 	}
 
+	// If it's a single file, detect kind first
+	if !info.IsDir() {
+		kind, err := config.DetectKind(path)
+		if err != nil {
+			return err
+		}
+
+		if kind == "Workflow" {
+			return cmdValidateWorkflow(path)
+		}
+	}
+
 	var specs []*config.SpecResult
 	if info.IsDir() {
 		loaded, err := config.LoadAll(path)
@@ -255,6 +273,40 @@ func cmdValidate(args []string) error {
 	}
 
 	fmt.Printf("\n✅ All %d pipeline(s) valid\n", len(specs))
+	return nil
+}
+
+func cmdValidateWorkflow(path string) error {
+	spec, err := config.LoadWorkflow(path)
+	if err != nil {
+		return err
+	}
+
+	baseDir, err := filepath.Abs(filepath.Dir(path))
+	if err != nil {
+		return fmt.Errorf("resolve workflow dir: %w", err)
+	}
+
+	result := config.ValidateWorkflow(spec, baseDir)
+
+	fmt.Printf("\n📋 %s (%s)\n", spec.Workflow.Name, path)
+
+	if len(result.Errors) > 0 {
+		for _, e := range result.Errors {
+			fmt.Printf("   ❌ %s: %s\n", e.Field, e.Message)
+		}
+	}
+	if len(result.Warnings) > 0 {
+		for _, w := range result.Warnings {
+			fmt.Printf("   ⚠️  %s: %s\n", w.Field, w.Message)
+		}
+	}
+
+	if !result.IsValid() {
+		return fmt.Errorf("validation failed")
+	}
+
+	fmt.Printf("\n✅ %s — valid (%d steps, DAG OK)\n", path, len(spec.Workflow.Steps))
 	return nil
 }
 
@@ -489,21 +541,49 @@ func cmdRun(args []string) error {
 		return fmt.Errorf("usage: mako run <file> or mako run --config <file>")
 	}
 
-	spec, err := config.Load(configPath)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Handle graceful shutdown
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+
+	go func() {
+		<-sigCh
+		fmt.Fprintf(os.Stderr, "\n⏹️  Shutting down gracefully...\n")
+		cancel()
+	}()
+
+	status, err := runPipeline(ctx, configPath)
 	if err != nil {
 		return err
 	}
 
+	if status.Errors > 0 {
+		return fmt.Errorf("pipeline completed with %d errors", status.Errors)
+	}
+
+	return nil
+}
+
+// runPipeline executes a single pipeline and returns its final status.
+// This is the extracted core of cmdRun, reusable by both `mako run` and `mako workflow`.
+func runPipeline(ctx context.Context, pipelineFile string) (v1.PipelineStatus, error) {
+	spec, err := config.Load(pipelineFile)
+	if err != nil {
+		return v1.PipelineStatus{}, err
+	}
+
 	result := config.Validate(spec)
 	if !result.IsValid() {
-		printValidation(configPath, spec.Pipeline.Name, result)
-		return fmt.Errorf("fix validation errors before running")
+		printValidation(pipelineFile, spec.Pipeline.Name, result)
+		return v1.PipelineStatus{}, fmt.Errorf("fix validation errors before running")
 	}
 
 	// Build transform chain
 	chain, err := transform.NewChain(spec.Pipeline.Transforms)
 	if err != nil {
-		return fmt.Errorf("build transforms: %w", err)
+		return v1.PipelineStatus{}, fmt.Errorf("build transforms: %w", err)
 	}
 
 	// Build source
@@ -541,7 +621,7 @@ func cmdRun(args []string) error {
 			case "file":
 				oneSrc = source.NewFileSource(s.Config)
 			default:
-				return fmt.Errorf("unsupported source type %q for source %q", s.Type, s.Name)
+				return v1.PipelineStatus{}, fmt.Errorf("unsupported source type %q for source %q", s.Type, s.Name)
 			}
 			namedSources[s.Name] = oneSrc
 			sourceNames = append(sourceNames, s.Name)
@@ -549,7 +629,7 @@ func cmdRun(args []string) error {
 
 		joiner, err := join.New(p.Join, sourceNames)
 		if err != nil {
-			return fmt.Errorf("build join engine: %w", err)
+			return v1.PipelineStatus{}, fmt.Errorf("build join engine: %w", err)
 		}
 
 		src = source.NewMultiSource(namedSources, sourceNames, joiner)
@@ -567,7 +647,7 @@ func cmdRun(args []string) error {
 		case "duckdb":
 			src = source.NewDuckDBSource(p.Source.Config)
 		default:
-			return fmt.Errorf("unsupported source type for run: %s (supported: kafka, file, postgres_cdc, http, duckdb)", p.Source.Type)
+			return v1.PipelineStatus{}, fmt.Errorf("unsupported source type for run: %s (supported: kafka, file, postgres_cdc, http, duckdb)", p.Source.Type)
 		}
 	}
 
@@ -593,7 +673,7 @@ func cmdRun(args []string) error {
 	if p.Vault != nil {
 		client, err := sink.InitVaultWithTTL(p.Vault.TTL)
 		if err != nil {
-			return fmt.Errorf("vault init: %w", err)
+			return v1.PipelineStatus{}, fmt.Errorf("vault init: %w", err)
 		}
 		if client != nil {
 			fmt.Fprintf(os.Stderr, "🔐 Vault:    connected (auth: %s, ttl: %s)\n", client.AuthType(), client.TTL())
@@ -611,19 +691,19 @@ func cmdRun(args []string) error {
 	if p.Sink.Type != "" {
 		s, err := sink.BuildFromSpec(p.Sink)
 		if err != nil {
-			return fmt.Errorf("build primary sink: %w", err)
+			return v1.PipelineStatus{}, fmt.Errorf("build primary sink: %w", err)
 		}
 		sinks = append(sinks, s)
 	}
 	for _, sinkSpec := range p.Sinks {
 		s, err := sink.BuildFromSpec(sinkSpec)
 		if err != nil {
-			return fmt.Errorf("build sink %q: %w", sinkSpec.Name, err)
+			return v1.PipelineStatus{}, fmt.Errorf("build sink %q: %w", sinkSpec.Name, err)
 		}
 		sinks = append(sinks, s)
 	}
 	if len(sinks) == 0 {
-		return fmt.Errorf("no sinks configured")
+		return v1.PipelineStatus{}, fmt.Errorf("no sinks configured")
 	}
 
 	// Create and start pipeline
@@ -642,7 +722,7 @@ func cmdRun(args []string) error {
 		}
 		dlqSink = kafka.NewSink(defaultBrokers, dlqTopic).WithAutoTopicCreation()
 		if err := dlqSink.Open(context.Background()); err != nil {
-			return fmt.Errorf("open DLQ sink %s: %w", dlqTopic, err)
+			return v1.PipelineStatus{}, fmt.Errorf("open DLQ sink %s: %w", dlqTopic, err)
 		}
 		pipe.SetDLQ(dlqSink)
 		fmt.Fprintf(os.Stderr, "🗑️  DLQ:      %s\n", dlqTopic)
@@ -670,13 +750,6 @@ func cmdRun(args []string) error {
 		pipe.SetSchemaValidator(validator)
 		fmt.Fprintf(os.Stderr, "📐 Schema:   %s (subject: %s)\n", registryURL, subject)
 	}
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	// Handle graceful shutdown
-	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 
 	// Start observability server (metrics + health + status)
 	metricsPort := 9090
@@ -748,7 +821,7 @@ func cmdRun(args []string) error {
 
 	if err := pipe.Start(ctx); err != nil {
 		slackAlerter.SendError(ctx, err, 0, 0)
-		return fmt.Errorf("start pipeline: %w", err)
+		return v1.PipelineStatus{}, fmt.Errorf("start pipeline: %w", err)
 	}
 
 	// syncMetrics copies pipeline counters to the observability server.
@@ -845,16 +918,16 @@ func cmdRun(args []string) error {
 
 	fmt.Fprintf(os.Stderr, "✅ Pipeline running. Press Ctrl+C to stop.\n")
 
-	// Wait for shutdown signal OR pipeline completion (e.g. file source EOF)
+	// Wait for context cancellation OR pipeline completion (e.g. file source EOF)
 	select {
-	case <-sigCh:
-		fmt.Fprintf(os.Stderr, "\n⏹️  Shutting down gracefully...\n")
+	case <-ctx.Done():
+		// context was cancelled (SIGINT in cmdRun, or workflow engine cancellation)
 	case <-pipe.Done():
 		fmt.Fprintf(os.Stderr, "\n📄 Source exhausted. Shutting down...\n")
 	}
 
 	if err := pipe.Stop(); err != nil {
-		return fmt.Errorf("stop pipeline: %w", err)
+		return v1.PipelineStatus{}, fmt.Errorf("stop pipeline: %w", err)
 	}
 
 	// Close the DLQ sink if it was opened
@@ -885,6 +958,71 @@ func cmdRun(args []string) error {
 	// Small delay to let async Slack messages fire before process exits
 	if slackAlerter != nil {
 		time.Sleep(200 * time.Millisecond)
+	}
+
+	return status, nil
+}
+
+// ═══════════════════════════════════════════
+// workflow — Run a multi-pipeline workflow (DAG)
+// ═══════════════════════════════════════════
+
+func cmdWorkflow(args []string) error {
+	if len(args) == 0 {
+		return fmt.Errorf("usage: mako workflow <file>")
+	}
+
+	workflowFile := args[0]
+
+	// Detect kind to provide a helpful error if it's a pipeline file
+	kind, err := config.DetectKind(workflowFile)
+	if err != nil {
+		return err
+	}
+	if kind != "Workflow" {
+		return fmt.Errorf("%s is kind %q, expected Workflow (use 'mako run' for pipelines)", workflowFile, kind)
+	}
+
+	// Load and validate the workflow spec
+	spec, err := config.LoadWorkflow(workflowFile)
+	if err != nil {
+		return err
+	}
+
+	baseDir, err := filepath.Abs(filepath.Dir(workflowFile))
+	if err != nil {
+		return fmt.Errorf("resolve workflow dir: %w", err)
+	}
+
+	result := config.ValidateWorkflow(spec, baseDir)
+	if !result.IsValid() {
+		fmt.Fprintf(os.Stderr, "\n📋 %s (%s)\n", spec.Workflow.Name, workflowFile)
+		for _, e := range result.Errors {
+			fmt.Fprintf(os.Stderr, "   ❌ %s: %s\n", e.Field, e.Message)
+		}
+		return fmt.Errorf("workflow validation failed")
+	}
+
+	// Set up context with signal handling
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+
+	go func() {
+		<-sigCh
+		fmt.Fprintf(os.Stderr, "\n⏹️  Workflow interrupted. Stopping running pipelines...\n")
+		cancel()
+	}()
+
+	// Create and run the workflow engine
+	engine := workflow.New(spec, baseDir, runPipeline)
+	status := engine.Run(ctx)
+
+	// Return non-zero exit code if any step failed
+	if status.State != v1.StateCompleted {
+		return fmt.Errorf("workflow %q failed", spec.Workflow.Name)
 	}
 
 	return nil

@@ -14,6 +14,27 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+// KindDetect reads just the "kind" field from a YAML file without fully parsing it.
+type KindDetect struct {
+	Kind string `yaml:"kind"`
+}
+
+// DetectKind returns the kind field from a YAML file (e.g., "Pipeline" or "Workflow").
+func DetectKind(path string) (string, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", fmt.Errorf("read %s: %w", path, err)
+	}
+	var kd KindDetect
+	if err := yaml.Unmarshal(data, &kd); err != nil {
+		return "", fmt.Errorf("parse yaml: %w", err)
+	}
+	if kd.Kind == "" {
+		return "Pipeline", nil // default
+	}
+	return kd.Kind, nil
+}
+
 // Load reads and parses a pipeline YAML file.
 func Load(path string) (*v1.PipelineSpec, error) {
 	data, err := os.ReadFile(path)
@@ -34,6 +55,179 @@ func Parse(data []byte) (*v1.PipelineSpec, error) {
 	applyDefaults(&spec)
 
 	return &spec, nil
+}
+
+// LoadWorkflow reads and parses a workflow YAML file.
+func LoadWorkflow(path string) (*v1.WorkflowSpec, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("read %s: %w", path, err)
+	}
+	return ParseWorkflow(data)
+}
+
+// ParseWorkflow parses raw YAML bytes into a WorkflowSpec.
+func ParseWorkflow(data []byte) (*v1.WorkflowSpec, error) {
+	var spec v1.WorkflowSpec
+	if err := yaml.Unmarshal(data, &spec); err != nil {
+		return nil, fmt.Errorf("parse yaml: %w", err)
+	}
+	if spec.APIVersion == "" {
+		spec.APIVersion = "mako/v1"
+	}
+	if spec.Kind == "" {
+		spec.Kind = "Workflow"
+	}
+	if spec.Workflow.OnFailure == "" {
+		spec.Workflow.OnFailure = "stop"
+	}
+	return &spec, nil
+}
+
+// ValidateWorkflow validates a WorkflowSpec for correctness.
+// It checks DAG structure (no cycles, valid references) and validates
+// that each referenced pipeline file exists and is individually valid.
+// baseDir is the directory of the workflow YAML file, used to resolve
+// relative pipeline paths.
+func ValidateWorkflow(spec *v1.WorkflowSpec, baseDir string) *ValidationResult {
+	result := &ValidationResult{}
+
+	// API version
+	if spec.APIVersion != "" && spec.APIVersion != "mako/v1" {
+		result.addError("apiVersion", fmt.Sprintf("unsupported version %q, expected mako/v1", spec.APIVersion))
+	}
+
+	w := spec.Workflow
+
+	// Workflow name
+	if w.Name == "" {
+		result.addError("workflow.name", "required")
+	} else if !isValidName(w.Name) {
+		result.addError("workflow.name", "must be lowercase alphanumeric with hyphens")
+	}
+
+	// Steps
+	if len(w.Steps) == 0 {
+		result.addError("workflow.steps", "at least one step is required")
+		return result
+	}
+
+	// OnFailure validation
+	validPolicies := map[string]bool{"stop": true, "continue": true, "retry": true}
+	if w.OnFailure != "" && !validPolicies[w.OnFailure] {
+		result.addError("workflow.onFailure", fmt.Sprintf("must be stop|continue|retry, got %q", w.OnFailure))
+	}
+
+	// Build step name index for reference validation
+	stepNames := make(map[string]bool, len(w.Steps))
+	for i, step := range w.Steps {
+		prefix := fmt.Sprintf("workflow.steps[%d]", i)
+		if step.Name == "" {
+			result.addError(prefix+".name", "required")
+			continue
+		}
+		if stepNames[step.Name] {
+			result.addError(prefix+".name", fmt.Sprintf("duplicate step name %q", step.Name))
+		}
+		stepNames[step.Name] = true
+
+		if step.Pipeline == "" {
+			result.addError(prefix+".pipeline", "required")
+		}
+	}
+
+	// Validate depends_on references exist
+	for i, step := range w.Steps {
+		prefix := fmt.Sprintf("workflow.steps[%d]", i)
+		for _, dep := range step.DependsOn {
+			if !stepNames[dep] {
+				result.addError(prefix+".depends_on", fmt.Sprintf("references unknown step %q", dep))
+			}
+			if dep == step.Name {
+				result.addError(prefix+".depends_on", "step cannot depend on itself")
+			}
+		}
+	}
+
+	// Cycle detection using DFS
+	if err := detectCycles(w.Steps); err != nil {
+		result.addError("workflow.steps", err.Error())
+	}
+
+	// Validate each referenced pipeline file
+	for i, step := range w.Steps {
+		if step.Pipeline == "" {
+			continue
+		}
+		prefix := fmt.Sprintf("workflow.steps[%d]", i)
+		pipelinePath := step.Pipeline
+		if !filepath.IsAbs(pipelinePath) {
+			pipelinePath = filepath.Join(baseDir, pipelinePath)
+		}
+		if _, err := os.Stat(pipelinePath); err != nil {
+			result.addError(prefix+".pipeline", fmt.Sprintf("file not found: %s", pipelinePath))
+			continue
+		}
+		pipeSpec, err := Load(pipelinePath)
+		if err != nil {
+			result.addError(prefix+".pipeline", fmt.Sprintf("invalid pipeline file: %v", err))
+			continue
+		}
+		pipeResult := Validate(pipeSpec)
+		if !pipeResult.IsValid() {
+			for _, e := range pipeResult.Errors {
+				result.addError(prefix+".pipeline("+step.Pipeline+")", e.Field+": "+e.Message)
+			}
+		}
+	}
+
+	return result
+}
+
+// detectCycles checks for cycles in the workflow DAG using DFS.
+func detectCycles(steps []v1.WorkflowStep) error {
+	// Build adjacency list
+	adj := make(map[string][]string)
+	for _, step := range steps {
+		adj[step.Name] = step.DependsOn
+	}
+
+	const (
+		white = 0 // unvisited
+		gray  = 1 // in current path
+		black = 2 // fully processed
+	)
+
+	color := make(map[string]int)
+	for _, step := range steps {
+		color[step.Name] = white
+	}
+
+	var dfs func(node string) error
+	dfs = func(node string) error {
+		color[node] = gray
+		for _, dep := range adj[node] {
+			switch color[dep] {
+			case gray:
+				return fmt.Errorf("cycle detected: %s → %s", node, dep)
+			case white:
+				if err := dfs(dep); err != nil {
+					return err
+				}
+			}
+		}
+		color[node] = black
+		return nil
+	}
+
+	for _, step := range steps {
+		if color[step.Name] == white {
+			if err := dfs(step.Name); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 // SpecResult pairs a parsed spec with its file path.

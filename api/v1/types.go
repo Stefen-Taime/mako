@@ -310,11 +310,14 @@ type PipelineStatus struct {
 type PipelineState string
 
 const (
-	StateRunning  PipelineState = "running"
-	StateStopped  PipelineState = "stopped"
-	StateFailed   PipelineState = "failed"
-	StateDegraded PipelineState = "degraded"
-	StateStarting PipelineState = "starting"
+	StateRunning   PipelineState = "running"
+	StateStopped   PipelineState = "stopped"
+	StateFailed    PipelineState = "failed"
+	StateDegraded  PipelineState = "degraded"
+	StateStarting  PipelineState = "starting"
+	StateCompleted PipelineState = "completed" // finished successfully (source exhausted, 0 errors)
+	StateSkipped   PipelineState = "skipped"   // skipped due to failed dependency
+	StatePending   PipelineState = "pending"   // waiting for dependencies
 )
 
 type SourceStatus struct {
@@ -332,4 +335,55 @@ type SinkStatus struct {
 type ThroughputInfo struct {
 	EventsPerSec float64 `json:"eventsPerSec"`
 	BytesPerSec  float64 `json:"bytesPerSec"`
+}
+
+// ═══════════════════════════════════════════
+// Workflow — DAG of pipelines
+// ═══════════════════════════════════════════
+
+// WorkflowSpec is the top-level specification for a Mako workflow.
+// One YAML file = one workflow = a DAG of pipelines executed sequentially
+// based on dependency order.
+type WorkflowSpec struct {
+	APIVersion string   `yaml:"apiVersion" json:"apiVersion"` // mako/v1
+	Kind       string   `yaml:"kind" json:"kind"`             // Workflow
+	Workflow   Workflow `yaml:"workflow" json:"workflow"`
+}
+
+// Workflow defines a DAG of pipeline steps.
+type Workflow struct {
+	Name        string            `yaml:"name" json:"name"`
+	Description string            `yaml:"description,omitempty" json:"description,omitempty"`
+	Owner       string            `yaml:"owner,omitempty" json:"owner,omitempty"`
+	Labels      map[string]string `yaml:"labels,omitempty" json:"labels,omitempty"`
+	Steps       []WorkflowStep    `yaml:"steps" json:"steps"`
+	OnFailure   string            `yaml:"onFailure,omitempty" json:"onFailure,omitempty"`   // stop (default) | continue | retry
+	MaxRetries  int               `yaml:"maxRetries,omitempty" json:"maxRetries,omitempty"` // per-step retry count (default: 0)
+}
+
+// WorkflowStep defines a single step in the workflow DAG.
+type WorkflowStep struct {
+	Name      string   `yaml:"name" json:"name"`
+	Pipeline  string   `yaml:"pipeline" json:"pipeline"`                       // path to pipeline YAML file (relative to workflow file)
+	DependsOn []string `yaml:"depends_on,omitempty" json:"depends_on,omitempty"` // names of steps that must complete first
+}
+
+// WorkflowStatus holds the runtime status of a workflow execution.
+type WorkflowStatus struct {
+	Name      string               `json:"name"`
+	State     PipelineState        `json:"state"`
+	Steps     []WorkflowStepStatus `json:"steps"`
+	StartedAt *time.Time           `json:"startedAt,omitempty"`
+	Duration  time.Duration        `json:"duration"`
+}
+
+// WorkflowStepStatus holds the runtime status of a single workflow step.
+type WorkflowStepStatus struct {
+	Name      string        `json:"name"`
+	Pipeline  string        `json:"pipeline"`
+	State     PipelineState `json:"state"`
+	EventsIn  int64         `json:"eventsIn"`
+	EventsOut int64         `json:"eventsOut"`
+	Errors    int64         `json:"errors"`
+	Duration  time.Duration `json:"duration"`
 }
