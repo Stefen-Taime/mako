@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -246,16 +247,24 @@ func (e *Engine) Run(ctx context.Context) v1.WorkflowStatus {
 	return e.buildStatus()
 }
 
-// executeStep runs a single step's pipeline.
+// executeStep runs a single step — either a pipeline or a quality gate.
 func (e *Engine) executeStep(ctx context.Context, name string) {
 	e.mu.Lock()
 	ss := e.steps[name]
 	ss.state = v1.StateRunning
+	stepType := ss.step.Type
 	e.mu.Unlock()
 
 	stepIdx := e.stepIndex(name)
 	totalSteps := len(e.order)
 
+	if stepType == "quality_gate" {
+		fmt.Fprintf(os.Stderr, "🔍 [%d/%d] %s — running quality checks...\n", stepIdx+1, totalSteps, name)
+		e.executeQualityGate(ctx, name)
+		return
+	}
+
+	// Default: pipeline step
 	fmt.Fprintf(os.Stderr, "▶️  [%d/%d] %s — running...\n", stepIdx+1, totalSteps, name)
 
 	// Resolve pipeline path relative to workflow file's directory
@@ -288,6 +297,44 @@ func (e *Engine) executeStep(ctx context.Context, name string) {
 	if status.Errors > 0 {
 		ss.state = v1.StateFailed
 		ss.err = fmt.Errorf("%d pipeline errors", status.Errors)
+		return
+	}
+
+	ss.state = v1.StateCompleted
+}
+
+// executeQualityGate runs SQL-based data quality assertions against a DuckDB database.
+func (e *Engine) executeQualityGate(ctx context.Context, name string) {
+	e.mu.Lock()
+	ss := e.steps[name]
+	e.mu.Unlock()
+
+	startTime := time.Now()
+	result, err := RunQualityGate(ctx, ss.step, e.baseDir)
+	elapsed := time.Since(startTime)
+
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	ss.duration = elapsed
+
+	if err != nil {
+		ss.state = v1.StateFailed
+		ss.err = err
+		return
+	}
+
+	// Store check counts in the status for reporting
+	ss.status = v1.PipelineStatus{
+		EventsIn:  int64(result.Total),
+		EventsOut: int64(result.Passed),
+		Errors:    int64(result.Failed),
+	}
+
+	if result.Failed > 0 {
+		ss.state = v1.StateFailed
+		ss.err = fmt.Errorf("%d/%d quality checks failed: %s",
+			result.Failed, result.Total, strings.Join(result.Errors, "; "))
 		return
 	}
 

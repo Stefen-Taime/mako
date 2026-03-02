@@ -71,12 +71,12 @@ mako generate pipeline.yaml --tf > infra.tf
 | Concept | Mako |
 |---|---|
 | Sources | Kafka, File (+ gzip + Parquet), PostgreSQL CDC, HTTP/API, DuckDB — [docs](docs/sources.md) |
-| Transforms | hash, mask, filter, rename, dedupe + WASM plugins — [docs](docs/transforms.md) |
+| Transforms | hash, mask, filter, rename, dedupe, **dq_check** + WASM plugins — [docs](docs/transforms.md) |
 | Sinks | PostgreSQL, Snowflake, BigQuery, ClickHouse, DuckDB, S3, GCS, Kafka — [docs](docs/sinks.md) |
 | Schema | Confluent Schema Registry (JSON Schema + Avro) — [docs](docs/observability.md#schema-enforcement) |
 | Observability | Prometheus /metrics, /health, /ready, /status — [docs](docs/observability.md) |
 | Deploy | Helm chart, `mako generate --k8s` + `--tf` — [helm](docs/helm.md) / [codegen](docs/codegen.md) |
-| Workflows | DAG orchestration: multi-pipeline steps with dependency resolution — [docs](docs/workflows.md) |
+| Workflows | DAG orchestration: multi-pipeline steps, **quality gates**, dependency resolution — [docs](docs/workflows.md) |
 | Fault tolerance | DLQ + retries + exponential backoff |
 | CI | GitHub Actions with integration tests (Kafka, PG, Schema Registry) |
 
@@ -148,6 +148,7 @@ pipeline.yaml
   |  (HTTP)     rename            ClickHouse |
   |  (DuckDB)   deduplicate       DuckDB     |
   |             sql               S3 / GCS   |
+  |             dq_check          Kafka      |
   |             wasm_plugin       Kafka      |
   |                               Stdout     |
   |                                          |
@@ -188,7 +189,9 @@ mako/
 │   │   ├── encode.go               # Shared Parquet + CSV encoders
 │   │   └── resolve.go              # Secret resolution chain (config → env → Vault)
 │   ├── duckdbext/cloud.go          # Shared DuckDB httpfs + cloud credentials (S3/GCS/Azure)
-│   ├── workflow/engine.go          # DAG workflow engine (parallel step execution)
+│   ├── workflow/
+│   │   ├── engine.go              # DAG workflow engine (parallel step execution)
+│   │   └── quality_gate.go        # Quality gate: SQL assertions against DuckDB
 │   ├── kafka/kafka.go              # Kafka source + sink (franz-go)
 │   ├── schema/registry.go          # Schema Registry client + validator
 │   ├── observability/server.go     # Prometheus metrics + health + status HTTP
@@ -294,6 +297,8 @@ go test -bench=. -benchmem ./...
 - [x] Parquet file source (native reading via parquet-go, local + HTTP)
 - [x] DuckDB cloud storage (S3/GCS/Azure via httpfs with auto-credential config)
 - [x] Workflow engine (DAG orchestration, parallel steps, failure policies)
+- [x] Data quality: inline `dq_check` transform (not_null, range, in_set, regex, type)
+- [x] Data quality: `quality_gate` workflow step (SQL assertions against DuckDB)
 
 ---
 

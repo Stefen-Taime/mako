@@ -121,6 +121,22 @@ type Transform struct {
 	Condition string   `yaml:"condition,omitempty" json:"condition,omitempty"` // filter
 	Mapping   map[string]string `yaml:"mapping,omitempty" json:"mapping,omitempty"` // rename, cast
 	Window    *WindowSpec       `yaml:"window,omitempty" json:"window,omitempty"`   // aggregate
+
+	// Data quality checks (dq_check transform)
+	Checks    []DQCheck `yaml:"checks,omitempty" json:"checks,omitempty"`
+	OnFailure string    `yaml:"on_failure,omitempty" json:"on_failure,omitempty"` // tag (default) | drop | fail
+}
+
+// DQCheck defines a single row-level data quality rule.
+type DQCheck struct {
+	Column string   `yaml:"column" json:"column"`
+	Rule   string   `yaml:"rule" json:"rule"`     // not_null | unique | range | in_set | regex | min_length | max_length | type
+	Values []string `yaml:"values,omitempty" json:"values,omitempty"`       // for in_set
+	Min    *float64 `yaml:"min,omitempty" json:"min,omitempty"`             // for range
+	Max    *float64 `yaml:"max,omitempty" json:"max,omitempty"`             // for range
+	Pattern string  `yaml:"pattern,omitempty" json:"pattern,omitempty"`     // for regex
+	Length  *int    `yaml:"length,omitempty" json:"length,omitempty"`       // for min_length / max_length
+	Type    string  `yaml:"type_expected,omitempty" json:"type_expected,omitempty"` // for type check: string, int, float, bool
 }
 
 type TransformType string
@@ -143,6 +159,9 @@ const (
 	// Aggregation
 	TransformAggregate  TransformType = "aggregate"      // Window aggregations
 	TransformDedupe     TransformType = "deduplicate"    // Deduplication by key
+
+	// Data Quality
+	TransformDQCheck    TransformType = "dq_check"       // Row-level data quality checks
 
 	// Custom
 	TransformPlugin     TransformType = "plugin"         // User-supplied WASM/Go plugin
@@ -362,10 +381,26 @@ type Workflow struct {
 }
 
 // WorkflowStep defines a single step in the workflow DAG.
+// A step is either a pipeline step (type: "" or "pipeline") or a
+// quality gate step (type: "quality_gate") that runs SQL assertions.
 type WorkflowStep struct {
 	Name      string   `yaml:"name" json:"name"`
-	Pipeline  string   `yaml:"pipeline" json:"pipeline"`                       // path to pipeline YAML file (relative to workflow file)
+	Type      string   `yaml:"type,omitempty" json:"type,omitempty"`           // "" (pipeline, default) | quality_gate
+	Pipeline  string   `yaml:"pipeline,omitempty" json:"pipeline,omitempty"`   // path to pipeline YAML file (for pipeline steps)
 	DependsOn []string `yaml:"depends_on,omitempty" json:"depends_on,omitempty"` // names of steps that must complete first
+
+	// Quality gate step fields
+	Database string         `yaml:"database,omitempty" json:"database,omitempty"` // DuckDB database path (quality_gate)
+	Checks   []QualityCheck `yaml:"checks,omitempty" json:"checks,omitempty"`     // SQL assertions (quality_gate)
+}
+
+// QualityCheck defines a single SQL-based data quality assertion.
+// The SQL query must return a single numeric value which is compared
+// against the Expect expression.
+type QualityCheck struct {
+	Name   string `yaml:"name,omitempty" json:"name,omitempty"` // check description
+	SQL    string `yaml:"sql" json:"sql"`                       // SQL query returning a single value
+	Expect string `yaml:"expect" json:"expect"`                 // assertion: "= 0", "< 10", "> 100", "BETWEEN 50 AND 500"
 }
 
 // WorkflowStatus holds the runtime status of a workflow execution.

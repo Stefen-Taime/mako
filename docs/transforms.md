@@ -105,3 +105,86 @@ tinygo build -o plugin.wasm -target=wasi -no-debug main.go
 ```
 
 See `examples/wasm-plugin/` for the full source (adds `_enriched: true` and `_processed_at` timestamp).
+
+## Data Quality (dq_check)
+
+Inline row-level data quality checks. Each event is validated against a set of rules; the action on failure is configurable.
+
+```yaml
+transforms:
+  - name: quality_checks
+    type: dq_check
+    on_failure: tag          # tag (default) | drop | fail
+    checks:
+      - column: email
+        rule: not_null
+
+      - column: age
+        rule: range
+        min: 0
+        max: 150
+
+      - column: status
+        rule: in_set
+        values: [active, inactive, pending]
+
+      - column: email
+        rule: regex
+        pattern: "^[^@]+@[^@]+\\.[^@]+$"
+
+      - column: name
+        rule: min_length
+        length: 2
+
+      - column: bio
+        rule: max_length
+        length: 500
+
+      - column: amount
+        rule: type
+        type_expected: number
+```
+
+### Supported rules
+
+| Rule | Parameters | Description |
+|---|---|---|
+| `not_null` | — | Field must exist and not be `""` or `nil` |
+| `range` | `min`, `max` | Numeric value must be within `[min, max]` |
+| `in_set` | `values` | Value must be one of the allowed values |
+| `regex` | `pattern` | String must match the regular expression |
+| `min_length` | `length` | String length must be >= `length` |
+| `max_length` | `length` | String length must be <= `length` |
+| `type` | `type_expected` | Value must be of type: `string`, `number`, `bool` |
+
+### Failure modes
+
+| Mode | Behavior |
+|---|---|
+| `tag` (default) | Event passes through with `_dq_valid: false` and `_dq_errors: [...]` fields added |
+| `drop` | Event is silently dropped from the pipeline |
+| `fail` | Event is routed to the DLQ (Dead Letter Queue) with error details |
+
+### Example: tag mode output
+
+Input:
+```json
+{"email": "", "age": 200, "status": "unknown"}
+```
+
+Output (with `on_failure: tag`):
+```json
+{
+  "email": "",
+  "age": 200,
+  "status": "unknown",
+  "_dq_valid": false,
+  "_dq_errors": [
+    "email: not_null check failed",
+    "age: range check failed (value 200 not in [0, 150])",
+    "status: in_set check failed (value \"unknown\" not in [active inactive pending])"
+  ]
+}
+```
+
+Downstream transforms or the sink can filter on `_dq_valid` to separate clean from dirty data.

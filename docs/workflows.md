@@ -53,11 +53,77 @@ The engine resolves the dependency graph and executes steps in topological order
 
 ## Step configuration
 
+### Pipeline steps (default)
+
 | Field | Required | Description |
 |---|---|---|
 | `name` | yes | Unique step identifier |
 | `pipeline` | yes | Path to pipeline YAML (relative to workflow directory) |
 | `depends_on` | no | List of step names that must complete before this step starts |
+
+### Quality gate steps
+
+Quality gates run SQL assertions against a DuckDB database to validate data after ingestion. Use them to enforce data contracts between pipeline stages.
+
+| Field | Required | Description |
+|---|---|---|
+| `name` | yes | Unique step identifier |
+| `type` | yes | Must be `quality_gate` |
+| `database` | yes | Path to DuckDB database file |
+| `depends_on` | no | List of step names that must complete before this step starts |
+| `checks` | yes | List of SQL assertions to run |
+| `checks[].name` | no | Human-readable check name (auto-generated if omitted) |
+| `checks[].sql` | yes | SQL query returning a single numeric value |
+| `checks[].expect` | yes | Assertion expression (see below) |
+
+**Assertion expressions:**
+
+| Expression | Example | Description |
+|---|---|---|
+| `= N` / `== N` | `= 0` | Value must equal N |
+| `!= N` | `!= 0` | Value must not equal N |
+| `> N` / `>= N` | `>= 100` | Value must be greater than (or equal to) N |
+| `< N` / `<= N` | `< 10` | Value must be less than (or equal to) N |
+| `BETWEEN N AND M` | `BETWEEN 50 AND 500` | Value must be in range [N, M] |
+
+**Example:**
+
+```yaml
+workflow:
+  name: ingest-with-quality
+  onFailure: stop
+
+  steps:
+    - name: ingest-users
+      pipeline: pipeline-users.yaml
+
+    - name: validate-users
+      type: quality_gate
+      database: ./output/users.duckdb
+      depends_on: [ingest-users]
+      checks:
+        - name: row_count
+          sql: "SELECT count(*) FROM users"
+          expect: ">= 100"
+
+        - name: no_null_emails
+          sql: "SELECT count(*) FROM users WHERE email IS NULL"
+          expect: "= 0"
+
+        - name: unique_ids
+          sql: "SELECT count(*) - count(DISTINCT id) FROM users"
+          expect: "= 0"
+
+        - name: avg_age_reasonable
+          sql: "SELECT avg(age) FROM users"
+          expect: "BETWEEN 18 AND 80"
+
+    - name: export-to-postgres
+      pipeline: pipeline-users-to-postgres.yaml
+      depends_on: [validate-users]
+```
+
+This workflow ingests data, validates it with SQL assertions, and only exports to Postgres if all quality checks pass.
 
 ## Failure policies
 

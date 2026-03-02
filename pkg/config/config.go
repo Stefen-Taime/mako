@@ -131,8 +131,24 @@ func ValidateWorkflow(spec *v1.WorkflowSpec, baseDir string) *ValidationResult {
 		}
 		stepNames[step.Name] = true
 
-		if step.Pipeline == "" {
-			result.addError(prefix+".pipeline", "required")
+		switch step.Type {
+		case "quality_gate":
+			if len(step.Checks) == 0 {
+				result.addError(prefix+".checks", "quality_gate step requires at least one check")
+			}
+			for j, check := range step.Checks {
+				checkPrefix := fmt.Sprintf("%s.checks[%d]", prefix, j)
+				if check.SQL == "" {
+					result.addError(checkPrefix+".sql", "required")
+				}
+				if check.Expect == "" {
+					result.addError(checkPrefix+".expect", "required")
+				}
+			}
+		default: // pipeline step
+			if step.Pipeline == "" {
+				result.addError(prefix+".pipeline", "required")
+			}
 		}
 	}
 

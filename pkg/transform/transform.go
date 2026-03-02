@@ -8,6 +8,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"regexp"
 	"strings"
 
 	v1 "github.com/Stefen-Taime/mako/api/v1"
@@ -132,6 +133,9 @@ func buildTransform(spec v1.Transform, opts *options) (Func, error) {
 	case v1.TransformAggregate:
 		// Aggregation is handled at the pipeline level (windowing)
 		return passthroughTransform(), nil
+
+	case v1.TransformDQCheck:
+		return dqCheckTransform(spec.Checks, spec.OnFailure)
 
 	case v1.TransformPlugin:
 		path, _ := spec.Config["path"].(string)
@@ -607,6 +611,160 @@ func passthroughTransform() Func {
 	return func(event map[string]any) (map[string]any, error) {
 		return event, nil
 	}
+}
+
+// ═══════════════════════════════════════════
+// Data Quality Check transform
+// ═══════════════════════════════════════════
+
+// dqCheckTransform runs a list of row-level data quality checks on each event.
+//
+// on_failure behavior:
+//   - "tag" (default): adds _dq_errors field with list of failures, event passes through
+//   - "drop": drops the event if any check fails (returns nil)
+//   - "fail": returns an error if any check fails (sends to DLQ)
+func dqCheckTransform(checks []v1.DQCheck, onFailure string) (Func, error) {
+	if len(checks) == 0 {
+		return nil, fmt.Errorf("dq_check requires at least one check")
+	}
+
+	if onFailure == "" {
+		onFailure = "tag"
+	}
+
+	// Pre-compile regex patterns
+	type compiledCheck struct {
+		check v1.DQCheck
+		re    *regexp.Regexp // only for regex rule
+	}
+	compiled := make([]compiledCheck, len(checks))
+	for i, c := range checks {
+		cc := compiledCheck{check: c}
+		if c.Rule == "regex" && c.Pattern != "" {
+			re, err := regexp.Compile(c.Pattern)
+			if err != nil {
+				return nil, fmt.Errorf("dq_check: invalid regex pattern %q for column %q: %w", c.Pattern, c.Column, err)
+			}
+			cc.re = re
+		}
+		compiled[i] = cc
+	}
+
+	return func(event map[string]any) (map[string]any, error) {
+		var failures []string
+
+		for _, cc := range compiled {
+			c := cc.check
+			v, exists := event[c.Column]
+
+			switch c.Rule {
+			case "not_null":
+				if !exists || v == nil {
+					failures = append(failures, fmt.Sprintf("%s: is null", c.Column))
+				}
+
+			case "range":
+				if !exists || v == nil {
+					break
+				}
+				fv := toFloat(v)
+				if c.Min != nil && fv < *c.Min {
+					failures = append(failures, fmt.Sprintf("%s: %.2f < min %.2f", c.Column, fv, *c.Min))
+				}
+				if c.Max != nil && fv > *c.Max {
+					failures = append(failures, fmt.Sprintf("%s: %.2f > max %.2f", c.Column, fv, *c.Max))
+				}
+
+			case "in_set":
+				if !exists || v == nil {
+					failures = append(failures, fmt.Sprintf("%s: is null (expected one of %v)", c.Column, c.Values))
+					break
+				}
+				str := fmt.Sprintf("%v", v)
+				found := false
+				for _, allowed := range c.Values {
+					if str == allowed {
+						found = true
+						break
+					}
+				}
+				if !found {
+					failures = append(failures, fmt.Sprintf("%s: %q not in %v", c.Column, str, c.Values))
+				}
+
+			case "regex":
+				if !exists || v == nil {
+					break
+				}
+				str := fmt.Sprintf("%v", v)
+				if cc.re != nil && !cc.re.MatchString(str) {
+					failures = append(failures, fmt.Sprintf("%s: %q does not match /%s/", c.Column, str, c.Pattern))
+				}
+
+			case "min_length":
+				if !exists || v == nil {
+					break
+				}
+				str := fmt.Sprintf("%v", v)
+				if c.Length != nil && len(str) < *c.Length {
+					failures = append(failures, fmt.Sprintf("%s: length %d < min %d", c.Column, len(str), *c.Length))
+				}
+
+			case "max_length":
+				if !exists || v == nil {
+					break
+				}
+				str := fmt.Sprintf("%v", v)
+				if c.Length != nil && len(str) > *c.Length {
+					failures = append(failures, fmt.Sprintf("%s: length %d > max %d", c.Column, len(str), *c.Length))
+				}
+
+			case "type":
+				if !exists || v == nil {
+					break
+				}
+				ok := false
+				switch c.Type {
+				case "string":
+					_, ok = v.(string)
+				case "int", "integer":
+					switch v.(type) {
+					case int, int32, int64:
+						ok = true
+					case float64:
+						f := v.(float64)
+						ok = f == float64(int64(f)) // whole number
+					}
+				case "float", "double", "number":
+					switch v.(type) {
+					case float32, float64, int, int32, int64:
+						ok = true
+					}
+				case "bool", "boolean":
+					_, ok = v.(bool)
+				}
+				if !ok {
+					failures = append(failures, fmt.Sprintf("%s: expected type %s, got %T", c.Column, c.Type, v))
+				}
+			}
+		}
+
+		if len(failures) == 0 {
+			return event, nil
+		}
+
+		switch onFailure {
+		case "drop":
+			return nil, nil // filtered out
+		case "fail":
+			return nil, fmt.Errorf("dq_check failed: %s", strings.Join(failures, "; "))
+		default: // "tag"
+			result := copyMap(event)
+			result["_dq_errors"] = failures
+			result["_dq_valid"] = false
+			return result, nil
+		}
+	}, nil
 }
 
 // ═══════════════════════════════════════════
