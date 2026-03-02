@@ -71,7 +71,7 @@ mako generate pipeline.yaml --tf > infra.tf
 | Concept | Mako |
 |---|---|
 | Sources | Kafka, File (+ gzip + Parquet), PostgreSQL CDC, HTTP/API, DuckDB — [docs](docs/sources.md) |
-| Transforms | hash, mask, filter, rename, dedupe, **dq_check** + WASM plugins — [docs](docs/transforms.md) |
+| Transforms | hash, mask, filter, rename, dedupe, sql, cast, flatten, default_values, **dq_check** + WASM plugins — [docs](docs/transforms.md) |
 | Sinks | PostgreSQL, Snowflake, BigQuery, ClickHouse, DuckDB, S3, GCS, Kafka — [docs](docs/sinks.md) |
 | Schema | Confluent Schema Registry (JSON Schema + Avro) — [docs](docs/observability.md#schema-enforcement) |
 | Observability | Prometheus /metrics, /health, /ready, /status — [docs](docs/observability.md) |
@@ -148,8 +148,11 @@ pipeline.yaml
   |  (HTTP)     rename            ClickHouse |
   |  (DuckDB)   deduplicate       DuckDB     |
   |             sql               S3 / GCS   |
-  |             dq_check          Kafka      |
-  |             wasm_plugin       Kafka      |
+  |             cast_fields       Kafka      |
+  |             flatten                      |
+  |             default_values               |
+  |             dq_check                     |
+  |             wasm_plugin                  |
   |                               Stdout     |
   |                                          |
   |  Schema Registry --> Validate            |
@@ -176,7 +179,8 @@ mako/
 │   │   ├── file.go                 # File source (JSONL, CSV, JSON, Parquet + gzip)
 │   │   ├── postgres_cdc.go         # PostgreSQL CDC source (pgx + pglogrepl)
 │   │   ├── http.go                 # HTTP/API source (REST, pagination, OAuth2)
-│   │   └── duckdb.go              # DuckDB source (SQL, Parquet/CSV/JSON + S3/GCS/Azure)
+│   │   ├── duckdb.go              # DuckDB source (SQL, Parquet/CSV/JSON + S3/GCS/Azure)
+│   │   └── multi.go              # Multi-source with join support
 │   ├── sink/
 │   │   ├── sink.go                 # Stdout, File sinks + BuildFromSpec
 │   │   ├── postgres.go             # PostgreSQL sink (pgx)
@@ -189,6 +193,10 @@ mako/
 │   │   ├── encode.go               # Shared Parquet + CSV encoders
 │   │   └── resolve.go              # Secret resolution chain (config → env → Vault)
 │   ├── duckdbext/cloud.go          # Shared DuckDB httpfs + cloud credentials (S3/GCS/Azure)
+│   ├── join/join.go                # Multi-source join engine (inner, left, cross)
+│   ├── alerting/
+│   │   ├── rules.go               # Alert rule evaluation (threshold, anomaly)
+│   │   └── slack.go               # Slack notification sink
 │   ├── workflow/
 │   │   ├── engine.go              # DAG workflow engine (parallel step execution)
 │   │   └── quality_gate.go        # Quality gate: SQL assertions against DuckDB

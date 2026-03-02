@@ -45,6 +45,95 @@ transforms:
     fields: [event_id]
 ```
 
+## SQL Transform
+
+Row-level SQL projections with support for field references, arithmetic expressions, `CASE WHEN` blocks, and aliasing.
+
+```yaml
+transforms:
+  - name: reshape
+    type: sql
+    query: >
+      SELECT
+        *,
+        amount * 1.2 AS amount_with_tax,
+        CASE WHEN status = 'active' THEN 'yes' ELSE 'no' END AS is_active
+      FROM events
+```
+
+Supported features:
+- `SELECT *` — pass through all fields
+- `field AS alias` — rename on the fly
+- Arithmetic expressions (`amount * 1.2`, `price + tax`)
+- `CASE WHEN condition THEN value ELSE value END`
+- `FROM` clause is optional (ignored — operates on the current event)
+
+## Type Casting
+
+Cast field values to a target type.
+
+```yaml
+transforms:
+  - name: fix_types
+    type: cast_fields
+    mapping:
+      age: int
+      price: float
+      active: bool
+      name: string
+```
+
+| Target type | Aliases | Description |
+|---|---|---|
+| `string` | — | Convert to string |
+| `int` | `integer` | Parse as 64-bit integer |
+| `float` | `double` | Parse as 64-bit float |
+| `bool` | `boolean` | `"true"` / `"1"` → true, everything else → false |
+
+## Flatten
+
+Flatten nested maps into dot-notation keys. Useful before writing to flat sinks (PostgreSQL, Snowflake).
+
+```yaml
+transforms:
+  - name: flatten_nested
+    type: flatten
+```
+
+**Example:**
+
+Input: `{"user": {"name": "John", "address": {"city": "Paris"}}}`
+
+Output: `{"user.name": "John", "user.address.city": "Paris"}`
+
+## Default Values
+
+Fill null or missing fields with default values.
+
+```yaml
+transforms:
+  - name: fill_defaults
+    type: default_values
+    config:
+      status: "unknown"
+      priority: 0
+      region: "us-east-1"
+```
+
+Only fills fields that are absent from the event — existing values (including empty strings) are preserved.
+
+## Aggregate
+
+Window-based aggregation (handled at the pipeline level). Declare the transform to enable windowed processing.
+
+```yaml
+transforms:
+  - name: window_agg
+    type: aggregate
+```
+
+> **Note:** Aggregation configuration (window size, grouping, functions) is set at the pipeline level. The transform declaration enables the aggregation pass-through.
+
 ## WASM Plugins
 
 Extend Mako with custom transforms written in any language that compiles to WebAssembly. Powered by [wazero](https://github.com/tetratelabs/wazero) (pure Go, zero CGO).
