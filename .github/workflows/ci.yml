@@ -30,11 +30,11 @@ jobs:
 
       - name: Validate examples
         run: |
-          ./bin/mako validate examples/simple/pipeline.yaml
-          ./bin/mako validate examples/advanced/pipeline.yaml
+          ./bin/mako validate examples/sources/kafka/pipeline-order-events.yaml
+          ./bin/mako validate examples/sources/kafka/pipeline-payment-features.yaml
 
       - name: Dry-run with fixtures
-        run: cat test/fixtures/events.jsonl | ./bin/mako dry-run examples/simple/pipeline.yaml
+        run: cat test/fixtures/events.jsonl | ./bin/mako dry-run examples/sources/kafka/pipeline-order-events.yaml
 
   # ════════════════════════════════════════════
   # Integration tests (Kafka + PostgreSQL + Schema Registry)
