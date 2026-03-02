@@ -155,7 +155,7 @@ func duckDBColumnType(v any) string {
 			return "TIMESTAMP"
 		}
 		return "VARCHAR"
-	case map[string]any, []any:
+	case map[string]any, []any, []string:
 		return "JSON"
 	default:
 		return "VARCHAR"
@@ -274,7 +274,7 @@ func (s *DuckDBSink) insertBatch(ctx context.Context, events []*pipeline.Event) 
 				continue
 			}
 			switch v.(type) {
-			case map[string]any, []any:
+			case map[string]any, []any, []string:
 				b, err := json.Marshal(v)
 				if err != nil {
 					return fmt.Errorf("duckdb marshal nested field %s: %w", col, err)

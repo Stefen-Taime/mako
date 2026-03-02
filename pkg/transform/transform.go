@@ -880,34 +880,76 @@ func parseCondition(cond string) (func(map[string]any) bool, error) {
 	}
 
 	// Handle comparisons: =, !=, >, <, >=, <=
-	operators := []struct {
-		op string
-		fn func(a, b string) bool
-	}{
-		{"!=", func(a, b string) bool { return a != b }},
-		{">=", func(a, b string) bool { return a >= b }},
-		{"<=", func(a, b string) bool { return a <= b }},
-		{"=", func(a, b string) bool { return a == b }},
-		{">", func(a, b string) bool { return a > b }},
-		{"<", func(a, b string) bool { return a < b }},
+	type cmpFuncs struct {
+		op      string
+		strCmp  func(a, b string) bool
+		numCmp  func(a, b float64) bool
+	}
+	operators := []cmpFuncs{
+		{"!=", func(a, b string) bool { return a != b }, func(a, b float64) bool { return a != b }},
+		{">=", func(a, b string) bool { return a >= b }, func(a, b float64) bool { return a >= b }},
+		{"<=", func(a, b string) bool { return a <= b }, func(a, b float64) bool { return a <= b }},
+		{"=", func(a, b string) bool { return a == b }, func(a, b float64) bool { return a == b }},
+		{">", func(a, b string) bool { return a > b }, func(a, b float64) bool { return a > b }},
+		{"<", func(a, b string) bool { return a < b }, func(a, b float64) bool { return a < b }},
 	}
 
 	for _, op := range operators {
 		if parts := strings.SplitN(cond, " "+op.op+" ", 2); len(parts) == 2 {
 			field := strings.TrimSpace(parts[0])
 			value := strings.Trim(strings.TrimSpace(parts[1]), "'\"")
-			cmp := op.fn
+			strFn := op.strCmp
+			numFn := op.numCmp
 			return func(e map[string]any) bool {
 				v, ok := e[field]
 				if !ok {
 					return false
 				}
-				return cmp(fmt.Sprintf("%v", v), value)
+				// Try numeric comparison first: if both the field value
+				// and the comparison operand parse as float64, compare numerically.
+				if af, aOk := toFloat64(v); aOk {
+					if bf, bOk := parseFloat64(value); bOk {
+						return numFn(af, bf)
+					}
+				}
+				return strFn(fmt.Sprintf("%v", v), value)
 			}, nil
 		}
 	}
 
 	return nil, fmt.Errorf("unsupported condition: %s", cond)
+}
+
+// toFloat64 attempts to extract a float64 from a Go value.
+// Returns (value, true) if the value is numeric or a numeric string.
+func toFloat64(v any) (float64, bool) {
+	switch val := v.(type) {
+	case float64:
+		return val, true
+	case float32:
+		return float64(val), true
+	case int:
+		return float64(val), true
+	case int64:
+		return float64(val), true
+	case int32:
+		return float64(val), true
+	case string:
+		return parseFloat64(val)
+	default:
+		return 0, false
+	}
+}
+
+// parseFloat64 attempts to parse a string as float64.
+func parseFloat64(s string) (float64, bool) {
+	s = strings.TrimSpace(s)
+	var f float64
+	n, err := fmt.Sscanf(s, "%f", &f)
+	if err != nil || n != 1 {
+		return 0, false
+	}
+	return f, true
 }
 
 func castValue(v any, targetType string) (any, error) {
