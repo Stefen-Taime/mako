@@ -35,6 +35,10 @@ type PipelineMetrics struct {
 type PipelineStatusFn func() map[string]any
 
 // Server is the HTTP server for observability endpoints.
+// It can run in two modes:
+//   - Single-pipeline mode: metrics/pipeline are set directly (mako run).
+//   - Registry mode: a MetricsRegistry is attached, and /metrics exposes
+//     all registered pipelines on a single port (mako workflow).
 type Server struct {
 	addr     string
 	metrics  *PipelineMetrics
@@ -42,6 +46,7 @@ type Server struct {
 	server   *http.Server
 	pipeline string
 	ready    atomic.Bool
+	registry *MetricsRegistry // non-nil in registry (workflow) mode
 }
 
 // NewServer creates an observability HTTP server.
@@ -54,6 +59,24 @@ func NewServer(addr, pipelineName string) *Server {
 		},
 	}
 	return s
+}
+
+// NewRegistryServer creates an observability HTTP server backed by a shared
+// MetricsRegistry. All registered pipelines are exposed on a single /metrics
+// endpoint. Use this for `mako workflow` where N pipelines share one port.
+func NewRegistryServer(addr string, registry *MetricsRegistry) *Server {
+	return &Server{
+		addr:     addr,
+		registry: registry,
+		metrics: &PipelineMetrics{
+			StartedAt: time.Now(),
+		},
+	}
+}
+
+// Registry returns the shared MetricsRegistry (nil in single-pipeline mode).
+func (s *Server) Registry() *MetricsRegistry {
+	return s.registry
 }
 
 // Metrics returns the metrics struct for recording counters.
@@ -116,6 +139,14 @@ func (s *Server) Stop() error {
 // ═══════════════════════════════════════════
 
 func (s *Server) handleMetrics(w http.ResponseWriter, r *http.Request) {
+	// Registry mode: delegate to the shared registry which emits metrics
+	// for ALL registered pipelines on this single endpoint.
+	if s.registry != nil {
+		s.registry.HandleMetrics(w, r)
+		return
+	}
+
+	// Single-pipeline mode (original behaviour)
 	m := s.metrics
 	uptime := time.Since(m.StartedAt).Seconds()
 	eventsIn := m.EventsIn.Load()

@@ -8,13 +8,11 @@ global:
 scrape_configs:
   - job_name: mako-pipelines
     # host.docker.internal resolves to the host machine from inside Docker.
-    # Mako pipelines expose /metrics on the configured port (default: 9090).
-    # Multiple ports for workflow steps running in parallel.
+    # All pipelines (standalone and workflow) expose metrics on a single port.
+    # Workflows use a shared MetricsRegistry so every pipeline's counters
+    # appear on :9090/metrics with a pipeline="" label.
     static_configs:
       - targets:
           - host.docker.internal:9090
-          - host.docker.internal:9100
-          - host.docker.internal:9101
-          - host.docker.internal:9102
         labels:
           env: local

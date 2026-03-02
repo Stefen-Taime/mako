@@ -554,7 +554,7 @@ func cmdRun(args []string) error {
 		cancel()
 	}()
 
-	status, err := runPipeline(ctx, configPath)
+	status, err := runPipeline(ctx, configPath, nil)
 	if err != nil {
 		return err
 	}
@@ -568,7 +568,12 @@ func cmdRun(args []string) error {
 
 // runPipeline executes a single pipeline and returns its final status.
 // This is the extracted core of cmdRun, reusable by both `mako run` and `mako workflow`.
-func runPipeline(ctx context.Context, pipelineFile string) (v1.PipelineStatus, error) {
+//
+// sharedObsSrv is an optional shared observability server (used by `mako workflow`).
+// When non-nil, pipeline metrics are registered in the server's MetricsRegistry
+// instead of spinning up a dedicated HTTP server per pipeline.
+// When nil, a per-pipeline server is started on the configured port (original behaviour).
+func runPipeline(ctx context.Context, pipelineFile string, sharedObsSrv *observability.Server) (v1.PipelineStatus, error) {
 	spec, err := config.Load(pipelineFile)
 	if err != nil {
 		return v1.PipelineStatus{}, err
@@ -762,7 +767,13 @@ func runPipeline(ctx context.Context, pipelineFile string) (v1.PipelineStatus, e
 	}
 
 	var obsSrv *observability.Server
-	if metricsEnabled {
+	var registryMetrics *observability.PipelineMetrics // non-nil when using shared registry
+	if sharedObsSrv != nil && sharedObsSrv.Registry() != nil {
+		// Workflow mode: register this pipeline in the shared registry.
+		// No per-pipeline HTTP server is started.
+		registryMetrics = sharedObsSrv.Registry().Register(p.Name)
+		obsSrv = nil // no per-pipeline server
+	} else if metricsEnabled {
 		obsSrv = observability.NewServer(fmt.Sprintf(":%d", metricsPort), p.Name)
 		obsSrv.SetStatusFn(func() map[string]any {
 			st := pipe.Status()
@@ -824,17 +835,23 @@ func runPipeline(ctx context.Context, pipelineFile string) (v1.PipelineStatus, e
 		return v1.PipelineStatus{}, fmt.Errorf("start pipeline: %w", err)
 	}
 
-	// syncMetrics copies pipeline counters to the observability server.
+	// syncMetrics copies pipeline counters to the observability server
+	// (per-pipeline mode) or shared registry (workflow mode).
 	syncMetrics := func() {
-		if obsSrv == nil {
+		var target *observability.PipelineMetrics
+		if registryMetrics != nil {
+			target = registryMetrics
+		} else if obsSrv != nil {
+			target = obsSrv.Metrics()
+		} else {
 			return
 		}
-		obsSrv.Metrics().EventsIn.Store(pipe.MetricsEventsIn().Load())
-		obsSrv.Metrics().EventsOut.Store(pipe.MetricsEventsOut().Load())
-		obsSrv.Metrics().Errors.Store(pipe.MetricsErrors().Load())
-		obsSrv.Metrics().DLQCount.Store(pipe.MetricsDLQCount().Load())
-		obsSrv.Metrics().SchemaFails.Store(pipe.MetricsSchemaFails().Load())
-		obsSrv.Metrics().SetSinkLatency(pipe.MetricsSinkLatency().Load())
+		target.EventsIn.Store(pipe.MetricsEventsIn().Load())
+		target.EventsOut.Store(pipe.MetricsEventsOut().Load())
+		target.Errors.Store(pipe.MetricsErrors().Load())
+		target.DLQCount.Store(pipe.MetricsDLQCount().Load())
+		target.SchemaFails.Store(pipe.MetricsSchemaFails().Load())
+		target.SetSinkLatency(pipe.MetricsSinkLatency().Load())
 	}
 
 	// Parse freshnessSLA for SLA breach detection
@@ -943,6 +960,9 @@ func runPipeline(ctx context.Context, pipelineFile string) (v1.PipelineStatus, e
 		syncMetrics()
 		obsSrv.SetReady(false)
 		obsSrv.Stop()
+	} else if registryMetrics != nil {
+		// Final sync for shared registry mode
+		syncMetrics()
 	}
 
 	status := pipe.Status()
@@ -1016,9 +1036,25 @@ func cmdWorkflow(args []string) error {
 		cancel()
 	}()
 
-	// Create and run the workflow engine
-	engine := workflow.New(spec, baseDir, runPipeline)
+	// Start a single shared observability server for all workflow pipelines.
+	// All pipeline metrics are exposed on one port via the MetricsRegistry.
+	metricsRegistry := observability.NewRegistry()
+	sharedSrv := observability.NewRegistryServer(":9090", metricsRegistry)
+	if err := sharedSrv.Start(); err != nil {
+		fmt.Fprintf(os.Stderr, "⚠️  Shared metrics server failed: %v\n", err)
+	} else {
+		fmt.Fprintf(os.Stderr, "📊 Metrics:  http://localhost:9090/metrics (all pipelines)\n")
+	}
+
+	// Create and run the workflow engine.
+	// Wrap runPipeline to inject the shared observability server.
+	engine := workflow.New(spec, baseDir, func(ctx context.Context, pipelineFile string) (v1.PipelineStatus, error) {
+		return runPipeline(ctx, pipelineFile, sharedSrv)
+	})
 	status := engine.Run(ctx)
+
+	// Stop the shared metrics server after the workflow completes
+	sharedSrv.Stop()
 
 	// Return non-zero exit code if any step failed
 	if status.State != v1.StateCompleted {
