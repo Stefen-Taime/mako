@@ -482,8 +482,12 @@ pipeline:
 
   # ════════════════════════════════════════════
   # Vault — secret resolution (optional)
-  # Requires: VAULT_ADDR and VAULT_TOKEN env vars
-  # cd docker && docker compose up -d vault
+  # Works with local Vault, HCP Vault, or Vault Enterprise.
+  # Auth methods (via env vars):
+  #   Token:      VAULT_ADDR + VAULT_TOKEN
+  #   AppRole:    VAULT_ADDR + VAULT_ROLE_ID + VAULT_SECRET_ID
+  #   Kubernetes: VAULT_ADDR + VAULT_K8S_ROLE
+  # Optional:     VAULT_NAMESPACE (Enterprise/HCP), VAULT_CACERT (TLS)
   # ════════════════════════════════════════════
 
   # vault:
