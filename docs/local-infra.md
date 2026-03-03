@@ -11,6 +11,8 @@ docker compose up -d           # Start all services
 ./produce-sample.sh            # Produce test events
 ```
 
+> **Tip:** Use `mako init --full pipeline.yaml` to generate a reference template with all available sources and sinks pre-configured for these local services (PostgreSQL, Kafka, etc.).
+
 ## Services
 
 | Service | Port | Description |

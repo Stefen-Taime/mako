@@ -51,6 +51,8 @@ pipeline:
 ```
 
 ```bash
+mako init                            # Starter template (stdout, zero deps)
+mako init --full pipeline-full.yaml  # Full reference with all connectors
 mako validate pipeline.yaml
 mako dry-run pipeline.yaml < events.jsonl
 mako run pipeline.yaml
@@ -178,7 +180,7 @@ git clone https://github.com/Stefen-Taime/mako.git
 cd mako
 go build -o bin/mako .
 
-# Create your first pipeline (HTTP source → stdout, works immediately)
+# Create your first pipeline (HTTP source → stdout, zero dependencies)
 ./bin/mako init
 
 # Validate
@@ -193,12 +195,34 @@ go build -o bin/mako .
 
 **Output of `mako run`:**
 
-```json
-{"_pii_processed":true,"color":"yellow","department":"Kitchen","id":3592,"material":"Rubber","price":201.79,"product_name":"Smart TV","promo_code":"DISCOUNT86","user_id":"77dfdfa33b54d756"}
-{"_pii_processed":true,"color":"purple","department":"Audio","id":4558,"material":"Cotton","price":155.3,"product_name":"Running Shoes","promo_code":"DISCOUNT55","user_id":"cedeb04476d0aaee"}
+```
+🔌 Preflight checks...
+   ✅ source — ready
+   ✅ stdout — connected
+🚀 Pipeline "commerce-ingest" started
+📥 Source:    http (https://raw.githubusercontent.com/.../json_bank_20240116_1.json)
+🔄 Transforms:
+   └─ pii_mask (hash_fields)
+   └─ cleanup (drop_fields)
+   └─ filter_price (filter)
+📤 Sinks:
+   └─ stdout
+{"_pii_processed":true,"color":"yellow","department":"Kitchen","id":3592,...}
+...
+📊 Final stats: 100 in → stdout → 58 out, 0 errors
 ```
 
 The starter pipeline fetches commerce data from [open-source-data](https://github.com/Stefen-Taime/open-source-data), hashes `user_id` (PII compliance), drops unnecessary fields, and filters items with `price > 50`. Zero infrastructure needed.
+
+### Full template
+
+To see **all** available sources, sinks, transforms, and monitoring options:
+
+```bash
+./bin/mako init --full pipeline-full.yaml
+```
+
+This generates a reference YAML with every connector and option as commented blocks. Uncomment the sections you need.
 
 ---
 
@@ -322,7 +346,7 @@ pipeline.yaml
 
 ```text
 mako/
-├── main.go                         # CLI entry point (run, workflow, validate, generate)
+├── main.go                         # CLI entry point (init, run, workflow, validate, generate)
 ├── api/v1/types.go                 # Pipeline + Workflow spec (the YAML DSL model)
 ├── pkg/
 │   ├── config/config.go            # YAML parser + validator

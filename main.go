@@ -87,7 +87,8 @@ Commands:
   version                      Print version
 
 Examples:
-  mako init
+  mako init                           # minimal starter (stdout, no deps)
+  mako init --full                    # full reference with all options
   mako validate pipeline.yaml
   mako validate workflow.yaml
   mako validate pipelines/
@@ -101,16 +102,27 @@ Examples:
 // ═══════════════════════════════════════════
 
 func cmdInit(args []string) error {
+	full := false
 	filename := "pipeline.yaml"
-	if len(args) > 0 {
-		filename = args[0]
+
+	for _, a := range args {
+		if a == "--full" {
+			full = true
+		} else {
+			filename = a
+		}
 	}
 
 	if _, err := os.Stat(filename); err == nil {
 		return fmt.Errorf("%s already exists", filename)
 	}
 
-	if err := os.WriteFile(filename, []byte(starterPipeline), 0644); err != nil {
+	tpl := starterPipeline
+	if full {
+		tpl = fullPipeline
+	}
+
+	if err := os.WriteFile(filename, []byte(tpl), 0644); err != nil {
 		return err
 	}
 
@@ -121,16 +133,20 @@ func cmdInit(args []string) error {
 	return nil
 }
 
+// starterPipeline is a minimal, zero-dependency template.
+// stdout sink + monitoring disabled → works immediately without Docker.
 const starterPipeline = `# Mako Pipeline — Starter Template
 # Docs: https://github.com/Stefen-Taime/mako
 #
 # This pipeline fetches commerce data from a public JSON API,
-# applies transforms, and loads to PostgreSQL.
+# applies transforms, and prints results to stdout.
 #
 # Quick start:
-#   cd docker && docker compose up -d   # start infrastructure
 #   mako validate pipeline.yaml
 #   mako run pipeline.yaml
+#
+# For all available sources, sinks, transforms and monitoring options:
+#   mako init --full pipeline-full.yaml
 #
 apiVersion: mako/v1
 kind: Pipeline
@@ -149,37 +165,329 @@ pipeline:
       response_type: json
 
   transforms:
-    # Hash user_id for privacy
     - name: pii_mask
       type: hash_fields
       fields: [user_id]
 
-    # Drop fields we don't need
     - name: cleanup
       type: drop_fields
       fields: [price_string, dt_current_timestamp]
 
-    # Keep only items above $50
     - name: filter_price
       type: filter
       condition: "price > 50"
 
   sink:
+    type: stdout
+`
+
+// fullPipeline is a comprehensive reference template with every source,
+// sink, transform and monitoring option available in Mako.
+// Users uncomment the sections they need.
+const fullPipeline = `# Mako Pipeline — Full Reference Template
+# Docs: https://github.com/Stefen-Taime/mako
+#
+# This file contains ALL available sources, sinks, transforms and
+# monitoring options. Uncomment the sections you need.
+#
+# Quick start:
+#   cd docker && docker compose up -d   # start infrastructure
+#   mako validate pipeline.yaml
+#   mako run pipeline.yaml
+#
+apiVersion: mako/v1
+kind: Pipeline
+
+pipeline:
+  name: my-pipeline
+  description: "My data pipeline"
+  owner: data-engineering
+
+  # ════════════════════════════════════════════
+  # Sources — uncomment ONE source
+  # ════════════════════════════════════════════
+
+  # ── HTTP (API / JSON file) ──
+  source:
+    type: http
+    config:
+      url: https://raw.githubusercontent.com/Stefen-Taime/open-source-data/main/commerce/json/json_bank_20240116_1.json
+      method: GET
+      auth_type: none           # none | basic | bearer | api_key
+      response_type: json       # json | csv | jsonl
+      # poll_interval: 30s      # repeat every 30s (omit for one-shot)
+      # headers:
+      #   Authorization: "Bearer <token>"
+
+  # ── Kafka ──
+  # source:
+  #   type: kafka
+  #   topic: events.commerce
+  #   brokers: localhost:9092
+  #   consumerGroup: mako-consumer
+  #   startOffset: earliest     # earliest | latest
+
+  # ── PostgreSQL CDC (Change Data Capture) ──
+  # source:
+  #   type: postgres_cdc
+  #   config:
+  #     host: localhost
+  #     port: "5432"
+  #     user: mako
+  #     password: mako
+  #     database: mako
+  #     tables: [public.orders, public.customers]
+  #     mode: snapshot+cdc      # snapshot | cdc | snapshot+cdc
+
+  # ── File (local or remote) ──
+  # source:
+  #   type: file
+  #   config:
+  #     path: ./data/events.jsonl       # local path or https:// URL
+  #     format: jsonl                   # json | jsonl | csv
+
+  # ── DuckDB (SQL query) ──
+  # source:
+  #   type: duckdb
+  #   config:
+  #     dsn: ./data/analytics.duckdb
+  #     query: "SELECT * FROM events WHERE created_at > '2024-01-01'"
+  #     # table: events                 # alternative: read entire table
+
+  # ════════════════════════════════════════════
+  # Transforms — uncomment what you need
+  # ════════════════════════════════════════════
+
+  transforms:
+    # ── PII hashing (SHA-256) ──
+    - name: pii_mask
+      type: hash_fields
+      fields: [user_id]
+
+    # ── Drop columns ──
+    - name: cleanup
+      type: drop_fields
+      fields: [price_string, dt_current_timestamp]
+
+    # ── Row filter (SQL WHERE syntax) ──
+    - name: filter_price
+      type: filter
+      condition: "price > 50"
+
+    # ── Partial masking (****1234) ──
+    # - name: mask_phone
+    #   type: mask_fields
+    #   fields: [phone, ssn]
+
+    # ── Rename columns ──
+    # - name: rename
+    #   type: rename_fields
+    #   mapping:
+    #     old_name: new_name
+    #     amt: amount
+
+    # ── Type casting ──
+    # - name: cast
+    #   type: cast_fields
+    #   mapping:
+    #     price: float
+    #     id: int
+    #     active: bool
+
+    # ── Default values (fill nulls) ──
+    # - name: defaults
+    #   type: default_values
+    #   config:
+    #     country: "US"
+    #     score: 0
+
+    # ── Flatten nested JSON ──
+    # - name: flatten
+    #   type: flatten
+
+    # ── SQL transform ──
+    # - name: enrich
+    #   type: sql
+    #   query: "SELECT *, price * 1.1 AS price_with_tax FROM events"
+
+    # ── Deduplication ──
+    # - name: dedupe
+    #   type: deduplicate
+    #   config:
+    #     key: id
+    #     window: 5m
+
+    # ── Aggregation (window) ──
+    # - name: hourly_count
+    #   type: aggregate
+    #   window:
+    #     type: tumbling          # tumbling | sliding | session
+    #     size: 1h
+    #     groupBy: [department]
+    #     function: count
+    #     field: id
+    #     output: order_count
+
+    # ── Data quality checks ──
+    # - name: quality
+    #   type: dq_check
+    #   on_failure: tag           # tag | drop | fail
+    #   checks:
+    #     - column: price
+    #       rule: range
+    #       min: 0
+    #       max: 10000
+    #     - column: email
+    #       rule: regex
+    #       pattern: "^[a-zA-Z0-9+_.-]+@[a-zA-Z0-9.-]+$"
+    #     - column: status
+    #       rule: in_set
+    #       values: [active, inactive, pending]
+    #     - column: id
+    #       rule: not_null
+
+  # ════════════════════════════════════════════
+  # Sinks — uncomment ONE sink
+  # ════════════════════════════════════════════
+
+  # ── Stdout (debug, no dependencies) ──
+  # sink:
+  #   type: stdout
+
+  # ── PostgreSQL ──
+  sink:
     type: postgres
     database: mako
     schema: public
     table: commerce_events
-    flatten: true
+    flatten: true               # true = typed columns, false = JSONB blob
     config:
       host: localhost
       port: "5432"
       user: mako
       password: mako
 
+  # ── Kafka ──
+  # sink:
+  #   type: kafka
+  #   topic: events.processed
+  #   config:
+  #     brokers: localhost:9092
+
+  # ── Snowflake ──
+  # sink:
+  #   type: snowflake
+  #   database: ANALYTICS
+  #   schema: RAW
+  #   table: EVENTS
+  #   flatten: true
+  #   config:
+  #     account: my-account
+  #     user: mako
+  #     password: secret
+  #     warehouse: COMPUTE_WH
+  #     role: SYSADMIN
+
+  # ── ClickHouse ──
+  # sink:
+  #   type: clickhouse
+  #   database: analytics
+  #   table: events
+  #   flatten: true
+  #   config:
+  #     host: localhost
+  #     port: "9000"
+  #     user: default
+  #     password: ""
+
+  # ── BigQuery ──
+  # sink:
+  #   type: bigquery
+  #   database: my-gcp-project
+  #   schema: raw_data
+  #   table: events
+  #   flatten: true
+  #   config:
+  #     project: my-gcp-project
+
+  # ── Amazon S3 ──
+  # sink:
+  #   type: s3
+  #   bucket: my-data-lake
+  #   prefix: raw/events
+  #   format: parquet            # json | jsonl | parquet | csv
+  #   config:
+  #     region: us-east-1
+
+  # ── Google Cloud Storage ──
+  # sink:
+  #   type: gcs
+  #   bucket: my-data-lake
+  #   prefix: raw/events
+  #   format: parquet            # json | jsonl | parquet | csv
+  #   config:
+  #     project: my-gcp-project
+
+  # ── DuckDB ──
+  # sink:
+  #   type: duckdb
+  #   config:
+  #     dsn: ./output/analytics.duckdb
+  #     table: events
+  #     flatten: true
+
+  # ════════════════════════════════════════════
+  # Monitoring — requires Prometheus + Grafana
+  # cd docker && docker compose up -d
+  # ════════════════════════════════════════════
+
   monitoring:
     metrics:
       enabled: true
       port: 9090
+
+    # ── Slack alerts ──
+    # slackWebhookURL: https://hooks.slack.com/services/XXX/YYY/ZZZ
+    # alertOnError: true
+    # alertOnComplete: false
+    # alertOnSLA: true
+    # freshnessSLA: 5m
+    # alertChannel: "#data-alerts"
+
+    # ── Threshold alerts ──
+    # alerts:
+    #   - name: high_error_rate
+    #     type: error_rate
+    #     threshold: "5%"
+    #     severity: critical
+    #   - name: slow_pipeline
+    #     type: latency
+    #     threshold: "30s"
+    #     severity: warning
+    #   - name: low_volume
+    #     type: volume
+    #     threshold: "-50%"
+    #     severity: warning
+
+  # ════════════════════════════════════════════
+  # Schema enforcement (optional)
+  # ════════════════════════════════════════════
+
+  # schema:
+  #   registry: http://localhost:8081
+  #   subject: commerce-events-value
+  #   enforce: true
+  #   compatibility: BACKWARD     # BACKWARD | FORWARD | FULL
+  #   onFailure: reject           # reject | dlq | log
+
+  # ════════════════════════════════════════════
+  # Fault tolerance (optional)
+  # ════════════════════════════════════════════
+
+  # isolation:
+  #   maxRetries: 3
+  #   backoffMs: 1000
+  #   dlqEnabled: true
 `
 
 // ═══════════════════════════════════════════

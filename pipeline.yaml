@@ -2,12 +2,14 @@
 # Docs: https://github.com/Stefen-Taime/mako
 #
 # This pipeline fetches commerce data from a public JSON API,
-# applies transforms, and loads to PostgreSQL.
+# applies transforms, and prints results to stdout.
 #
 # Quick start:
-#   cd docker && docker compose up -d   # start infrastructure
 #   mako validate pipeline.yaml
 #   mako run pipeline.yaml
+#
+# For all available sources, sinks, transforms and monitoring options:
+#   mako init --full pipeline-full.yaml
 #
 apiVersion: mako/v1
 kind: Pipeline
@@ -26,34 +28,17 @@ pipeline:
       response_type: json
 
   transforms:
-    # Hash user_id for privacy
     - name: pii_mask
       type: hash_fields
       fields: [user_id]
 
-    # Drop fields we don't need
     - name: cleanup
       type: drop_fields
       fields: [price_string, dt_current_timestamp]
 
-    # Keep only items above $50
     - name: filter_price
       type: filter
       condition: "price > 50"
 
   sink:
-    type: postgres
-    database: mako
-    schema: public
-    table: commerce_events
-    flatten: true
-    config:
-      host: localhost
-      port: "5432"
-      user: mako
-      password: mako
-
-  monitoring:
-    metrics:
-      enabled: true
-      port: 9090
+    type: stdout

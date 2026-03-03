@@ -12,6 +12,12 @@ cd mako
 # Build
 go build -o bin/mako .
 
+# Generate a starter pipeline (stdout, zero dependencies)
+./bin/mako init
+
+# Or generate a full reference template with all connectors
+./bin/mako init --full pipeline-full.yaml
+
 # Run tests
 go test -v -race ./...
 

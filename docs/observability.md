@@ -1,6 +1,8 @@
 # Observability
 
-When running `mako run`, an HTTP server exposes Prometheus metrics, health probes, and pipeline status.
+When running `mako run`, Mako performs **preflight checks** (verifying source reachability and sink connectivity) before processing any data. It then exposes real-time Prometheus metrics, health probes, and pipeline status via an HTTP server.
+
+> **Tip:** Run `mako init --full pipeline.yaml` to get a template with all monitoring and alerting options pre-configured.
 
 ```yaml
 monitoring:
