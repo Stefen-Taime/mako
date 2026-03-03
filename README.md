@@ -178,30 +178,27 @@ git clone https://github.com/Stefen-Taime/mako.git
 cd mako
 go build -o bin/mako .
 
-# Create your first pipeline
+# Create your first pipeline (HTTP source → stdout, works immediately)
 ./bin/mako init
 
 # Validate
 ./bin/mako validate pipeline.yaml
 
-# Test locally with sample data
-echo '{"email":"john@test.com","amount":99.99,"status":"completed","environment":"production"}' | \
-  ./bin/mako dry-run pipeline.yaml
-
-# Run pipeline (Source -> Transforms -> Sink)
+# Run pipeline — fetches 100 commerce records, applies transforms, prints to stdout
 ./bin/mako run pipeline.yaml
 
 # Run a workflow (DAG of multiple pipelines)
 ./bin/mako workflow workflow.yaml
 ```
 
-**Output of dry-run:**
+**Output of `mako run`:**
 
 ```json
-{"_pii_processed":true,"amount":99.99,"email":"243b73234c6433b8","environment":"production","status":"completed"}
+{"_pii_processed":true,"color":"yellow","department":"Kitchen","id":3592,"material":"Rubber","price":201.79,"product_name":"Smart TV","promo_code":"DISCOUNT86","user_id":"77dfdfa33b54d756"}
+{"_pii_processed":true,"color":"purple","department":"Audio","id":4558,"material":"Cotton","price":155.3,"product_name":"Running Shoes","promo_code":"DISCOUNT55","user_id":"cedeb04476d0aaee"}
 ```
 
-The email is hashed (PII compliance), the event passes the production filter, and it's ready for the warehouse.
+The starter pipeline fetches commerce data from [open-source-data](https://github.com/Stefen-Taime/open-source-data), hashes `user_id` (PII compliance), drops unnecessary fields, and filters items with `price > 50`. Zero infrastructure needed.
 
 ---
 
