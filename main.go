@@ -481,6 +481,16 @@ pipeline:
   #   onFailure: reject           # reject | dlq | log
 
   # ════════════════════════════════════════════
+  # Vault — secret resolution (optional)
+  # Requires: VAULT_ADDR and VAULT_TOKEN env vars
+  # cd docker && docker compose up -d vault
+  # ════════════════════════════════════════════
+
+  # vault:
+  #   path: secret/data/mako          # base Vault path
+  #   ttl: 5m                         # cache TTL (default: 5m)
+
+  # ════════════════════════════════════════════
   # Fault tolerance (optional)
   # ════════════════════════════════════════════
 
