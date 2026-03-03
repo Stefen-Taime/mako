@@ -50,10 +50,10 @@ jobs:
           - 9092:9092
         env:
           KAFKA_NODE_ID: 1
-          KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,HOST:PLAINTEXT
-          KAFKA_ADVERTISED_LISTENERS: HOST://localhost:9092
-          KAFKA_LISTENERS: HOST://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093
-          KAFKA_INTER_BROKER_LISTENER_NAME: HOST
+          KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,HOST:PLAINTEXT
+          KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:29092,HOST://localhost:9092
+          KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:29092,HOST://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093
+          KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
           KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
           KAFKA_CONTROLLER_QUORUM_VOTERS: 1@localhost:9093
           KAFKA_PROCESS_ROLES: broker,controller
@@ -90,14 +90,14 @@ jobs:
           - 8081:8081
         env:
           SCHEMA_REGISTRY_HOST_NAME: schema-registry
-          SCHEMA_REGISTRY_KAFKASTORE_BOOTSTRAP_SERVERS: localhost:9092
+          SCHEMA_REGISTRY_KAFKASTORE_BOOTSTRAP_SERVERS: kafka:29092
           SCHEMA_REGISTRY_LISTENERS: http://0.0.0.0:8081
         options: >-
           --health-cmd "curl -f http://localhost:8081/ || exit 1"
           --health-interval 10s
           --health-timeout 5s
           --health-retries 15
-          --health-start-period 20s
+          --health-start-period 30s
 
     steps:
       - uses: actions/checkout@v4
