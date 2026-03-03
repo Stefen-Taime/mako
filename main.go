@@ -125,7 +125,7 @@ const starterPipeline = `# Mako Pipeline — Starter Template
 # Docs: https://github.com/Stefen-Taime/mako
 #
 # This pipeline fetches commerce data from a public JSON API,
-# applies transforms, and prints results to stdout.
+# applies transforms, and loads to PostgreSQL.
 #
 # Quick start:
 #   cd docker && docker compose up -d   # start infrastructure
@@ -165,22 +165,15 @@ pipeline:
       condition: "price > 50"
 
   sink:
-    type: stdout
-
-  # ── To write to PostgreSQL instead, replace the sink above with: ──
-  #
-  # sink:
-  #   type: postgres
-  #   database: mako
-  #   schema: public
-  #   table: commerce_events
-  #   config:
-  #     host: localhost
-  #     port: "5432"
-  #     user: mako
-  #     password: mako
-  #
-  # ── End PostgreSQL sink ──
+    type: postgres
+    database: mako
+    schema: public
+    table: commerce_events
+    config:
+      host: localhost
+      port: "5432"
+      user: mako
+      password: mako
 
   monitoring:
     metrics:
