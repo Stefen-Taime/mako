@@ -16,7 +16,7 @@ go build -o bin/mako .
 go test -v -race ./...
 
 # Validate an example pipeline
-./bin/mako validate examples/simple/pipeline.yaml
+./bin/mako validate examples/sources/kafka/pipeline-order-events.yaml
 ```
 
 **Requirements:** Go 1.23+, Docker (for local infra and integration tests).
@@ -68,8 +68,8 @@ go build -o bin/mako .
 golangci-lint run ./...
 
 # Validate examples still work
-./bin/mako validate examples/simple/pipeline.yaml
-./bin/mako validate examples/advanced/pipeline.yaml
+./bin/mako validate examples/sources/kafka/pipeline-order-events.yaml
+./bin/mako validate examples/sources/kafka/pipeline-payment-features.yaml
 ```
 
 ### 4. Commit
@@ -110,14 +110,14 @@ mako/
 │   ├── kafka/               # Kafka source + sink
 │   ├── vault/               # HashiCorp Vault client
 │   ├── schema/              # Schema Registry
-│   ├── observability/       # Prometheus metrics + health
-│   └── codegen/             # K8s + Terraform generators
+│   └── observability/       # Prometheus metrics + health
 ├── docker/                  # Local infra (docker-compose)
 ├── docs/                    # Documentation
-├── examples/                # Example pipelines + WASM plugin examples
-│   ├── duckdb/              # DuckDB pipeline examples
-│   ├── wasm-plugin/         # TinyGo WASM plugin (standby)
-│   └── wasm-plugin-rust/    # Rust WASM plugin (recommended)
+├── examples/                # Pipeline catalog
+│   ├── sources/             # HTTP, File, Kafka, PostgreSQL CDC, DuckDB
+│   ├── sinks/               # PostgreSQL, Snowflake, DuckDB, GCS, Kafka, Stdout
+│   ├── transforms/          # SQL, WASM, Schema, DQ Check, PII, Filter
+│   └── workflows/           # NYC TLC Star Schema, ETL Demo, Multi-Source
 ```
 
 ## Adding a New Source

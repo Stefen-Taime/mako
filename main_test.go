@@ -15,7 +15,6 @@ import (
 	"time"
 
 	"github.com/Stefen-Taime/mako/api/v1"
-	"github.com/Stefen-Taime/mako/pkg/codegen"
 	"github.com/Stefen-Taime/mako/pkg/config"
 	"github.com/Stefen-Taime/mako/pkg/pipeline"
 	"github.com/Stefen-Taime/mako/pkg/sink"
@@ -168,7 +167,7 @@ func TestValidateWarnsOnMissingOwner(t *testing.T) {
 }
 
 func TestLoadExampleSimple(t *testing.T) {
-	spec, err := config.Load("examples/simple/pipeline.yaml")
+	spec, err := config.Load("examples/sources/kafka/pipeline-order-events.yaml")
 	if err != nil {
 		t.Fatalf("load failed: %v", err)
 	}
@@ -182,7 +181,7 @@ func TestLoadExampleSimple(t *testing.T) {
 }
 
 func TestLoadExampleAdvanced(t *testing.T) {
-	spec, err := config.Load("examples/advanced/pipeline.yaml")
+	spec, err := config.Load("examples/sources/kafka/pipeline-payment-features.yaml")
 	if err != nil {
 		t.Fatalf("load failed: %v", err)
 	}
@@ -470,100 +469,6 @@ func TestDeduplicateTransform(t *testing.T) {
 }
 
 // ═══════════════════════════════════════════
-// Codegen Tests
-// ═══════════════════════════════════════════
-
-func TestGenerateK8s(t *testing.T) {
-	spec := &v1.PipelineSpec{
-		Pipeline: v1.Pipeline{
-			Name:   "test-pipeline",
-			Owner:  "test-team",
-			Source: v1.Source{Type: v1.SourceKafka, Topic: "events.test", ConsumerGroup: "mako-test"},
-			Sink:   v1.Sink{Type: v1.SinkSnowflake, Table: "TEST_EVENTS"},
-		},
-	}
-
-	k8s, err := codegen.GenerateK8s(spec, "registry.example.com")
-	if err != nil {
-		t.Fatalf("generate k8s: %v", err)
-	}
-
-	checks := []string{
-		"test-pipeline",
-		"registry.example.com",
-		"mako.io/pipeline",
-		"app.kubernetes.io/managed-by: mako",
-		"events.test",
-		"prometheus.io/scrape",
-	}
-
-	for _, check := range checks {
-		if !strings.Contains(k8s, check) {
-			t.Errorf("K8s manifest should contain %q", check)
-		}
-	}
-}
-
-func TestGenerateTerraform(t *testing.T) {
-	spec := &v1.PipelineSpec{
-		Pipeline: v1.Pipeline{
-			Name:   "order-events",
-			Source: v1.Source{Type: v1.SourceKafka, Topic: "events.orders"},
-			Sink: v1.Sink{
-				Type:     v1.SinkSnowflake,
-				Database: "ANALYTICS",
-				Schema:   "RAW",
-				Table:    "ORDER_EVENTS",
-			},
-			Isolation: v1.IsolationSpec{DLQEnabled: true},
-		},
-	}
-
-	tf, err := codegen.GenerateTerraform(spec)
-	if err != nil {
-		t.Fatalf("generate terraform: %v", err)
-	}
-
-	checks := []string{
-		"kafka_topic",
-		"events.orders",
-		"snowflake_table",
-		"ANALYTICS",
-		"ORDER_EVENTS",
-		"snowflake_pipe",
-		"dlq",
-	}
-
-	for _, check := range checks {
-		if !strings.Contains(tf, check) {
-			t.Errorf("Terraform should contain %q", check)
-		}
-	}
-}
-
-func TestGenerateTerraformBigQuery(t *testing.T) {
-	spec := &v1.PipelineSpec{
-		Pipeline: v1.Pipeline{
-			Name:   "bq-events",
-			Source: v1.Source{Type: v1.SourceKafka, Topic: "events.bq"},
-			Sink: v1.Sink{
-				Type:   v1.SinkBigQuery,
-				Schema: "raw_events",
-				Table:  "events",
-			},
-		},
-	}
-
-	tf, err := codegen.GenerateTerraform(spec)
-	if err != nil {
-		t.Fatalf("generate: %v", err)
-	}
-
-	if !strings.Contains(tf, "google_bigquery_table") {
-		t.Error("should contain BigQuery table resource")
-	}
-}
-
 // ═══════════════════════════════════════════
 // Integration: dry-run with fixture data
 // ═══════════════════════════════════════════

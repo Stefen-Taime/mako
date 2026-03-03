@@ -41,7 +41,7 @@ Metrics are synced from the pipeline engine to the observability server every 50
 ## Kubernetes Probes
 
 ```yaml
-# In generated K8s manifest (mako generate --k8s)
+# Example Kubernetes probe configuration
 livenessProbe:
   httpGet:
     path: /health

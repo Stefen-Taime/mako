@@ -19,8 +19,6 @@
   <a href="examples/transforms/">Transforms</a> &middot;
   <a href="examples/workflows/">Workflows</a> &middot;
   <a href="#observability">Observability</a> &middot;
-  <a href="docs/helm.md">Helm</a> &middot;
-  <a href="docs/codegen.md">Codegen</a> &middot;
   <a href="CONTRIBUTING.md">Contributing</a>
 </p>
 
@@ -56,8 +54,6 @@ mako validate pipeline.yaml
 mako dry-run pipeline.yaml < events.jsonl
 mako run pipeline.yaml
 mako workflow workflow.yaml          # DAG orchestration
-mako generate pipeline.yaml --k8s > deploy.yaml
-mako generate pipeline.yaml --tf > infra.tf
 ```
 
 ---
@@ -196,12 +192,6 @@ echo '{"email":"john@test.com","amount":99.99,"status":"completed","environment"
 
 # Run a workflow (DAG of multiple pipelines)
 ./bin/mako workflow workflow.yaml
-
-# Generate Kubernetes manifests
-./bin/mako generate pipeline.yaml --k8s > deploy.yaml
-
-# Generate Terraform (Kafka topics, Snowflake tables, Schema Registry)
-./bin/mako generate pipeline.yaml --tf > infra.tf
 ```
 
 **Output of dry-run:**
@@ -240,12 +230,9 @@ pipeline.yaml
        |
        v
   +----------+
-  |   mako   |  CLI: validate, generate, dry-run, run, workflow
+  |   mako   |  CLI: validate, dry-run, run, workflow
   |   (Go)   |
   +----+-----+
-       |
-       +---> Kubernetes manifests (Deployment, HPA, ConfigMap)
-       +---> Terraform HCL (Kafka topics, warehouse tables)
        |
        v
   +------------------------------------------+
@@ -310,20 +297,17 @@ mako/
 │   ├── join/join.go                # Multi-source join engine
 │   ├── duckdbext/cloud.go          # DuckDB httpfs + cloud credentials
 │   ├── alerting/                   # Slack alert rules + notifications
-│   ├── vault/vault.go              # HashiCorp Vault client
-│   └── codegen/codegen.go          # K8s + Terraform generators
+│   └── vault/vault.go              # HashiCorp Vault client
 ├── examples/                       # Pipeline catalog (see below)
 │   ├── sources/                    # HTTP, File, Kafka, PostgreSQL CDC, DuckDB
 │   ├── sinks/                      # PostgreSQL, Snowflake, DuckDB, GCS, Kafka, Stdout
 │   ├── transforms/                 # SQL, WASM, Schema, DQ Check, PII, Filter
 │   └── workflows/                  # NYC TLC Star Schema, ETL Demo, Multi-Source
 ├── docs/                           # Detailed documentation
-├── charts/mako/                    # Helm chart for Kubernetes
 ├── docker/                         # Local infra (Kafka, PostgreSQL, Prometheus)
 ├── grafana/                        # Grafana dashboard template
 ├── .github/workflows/ci.yml        # CI: unit + integration tests
-├── Dockerfile                      # Production image
-└── Dockerfile.runner               # Per-pipeline runner image
+└── Dockerfile                      # Production image
 ```
 
 ---
@@ -334,7 +318,7 @@ GitHub Actions runs on every push/PR:
 
 **Unit tests** (fast, no Docker):
 
-- 70+ tests covering config, validation, transforms, WASM plugins, codegen, sources, sinks
+- 70+ tests covering config, validation, transforms, WASM plugins, sources, sinks
 - Benchmarks for transform chain performance
 - Example validation + dry-run
 
@@ -368,9 +352,7 @@ go test -bench=. -benchmem ./...
 - [x] S3/GCS object storage sinks
 - [x] Grafana dashboard templates
 - [x] ClickHouse sink (clickhouse-go v2)
-- [x] Helm chart
 - [x] WASM plugin transforms (wazero)
-- [x] Flatten mode for PostgreSQL, BigQuery, ClickHouse
 - [x] Parquet + CSV output formats for S3/GCS
 - [x] HashiCorp Vault integration (secret resolution chain)
 - [x] PostgreSQL CDC source (snapshot, cdc, snapshot+cdc)
@@ -384,6 +366,8 @@ go test -bench=. -benchmem ./...
 - [x] Data quality: inline `dq_check` transform
 - [x] Data quality: `quality_gate` workflow step (SQL assertions)
 - [x] Shared Prometheus metrics registry (single port for workflows)
+- [ ] Helm chart for Kubernetes deployment
+- [ ] Codegen: `mako generate --k8s` + `--tf` (Kubernetes manifests, Terraform HCL)
 
 ---
 

@@ -24,7 +24,6 @@ import (
 	v1 "github.com/Stefen-Taime/mako/api/v1"
 	"github.com/Stefen-Taime/mako/internal/cli"
 	"github.com/Stefen-Taime/mako/pkg/alerting"
-	"github.com/Stefen-Taime/mako/pkg/codegen"
 	"github.com/Stefen-Taime/mako/pkg/config"
 	"github.com/Stefen-Taime/mako/pkg/join"
 	"github.com/Stefen-Taime/mako/pkg/kafka"
@@ -53,14 +52,6 @@ func main() {
 		err = cmdInit(args)
 	case "validate":
 		err = cmdValidate(args)
-	case "apply":
-		err = cmdApply(args)
-	case "status":
-		err = cmdStatus(args)
-	case "destroy":
-		err = cmdDestroy(args)
-	case "generate":
-		err = cmdGenerate(args)
 	case "run":
 		err = cmdRun(args)
 	case "workflow":
@@ -90,13 +81,9 @@ func printUsage() {
 Commands:
   init                         Create a starter pipeline.yaml
   validate <file|dir>          Validate pipeline or workflow specification
-  apply    <file|dir>          Deploy pipeline to Kubernetes
   run      <file> [--config]   Run pipeline locally (Source -> Transforms -> Sink)
   workflow <file>              Run a multi-pipeline workflow (DAG)
-  generate <file> [--k8s|--tf] Generate K8s manifests or Terraform
   dry-run  <file>              Process sample data locally (stdin)
-  status   [name]              Show running pipeline status
-  destroy  <name>              Remove a deployed pipeline
   version                      Print version
 
 Examples:
@@ -104,13 +91,9 @@ Examples:
   mako validate pipeline.yaml
   mako validate workflow.yaml
   mako validate pipelines/
-  mako apply pipeline.yaml
   mako run pipeline.yaml
   mako workflow etl-daily.yaml
-  mako generate pipeline.yaml --k8s
-  mako dry-run pipeline.yaml < events.jsonl
-  mako status order-events
-  mako destroy order-events`)
+  mako dry-run pipeline.yaml < events.jsonl`)
 }
 
 // ═══════════════════════════════════════════
@@ -329,99 +312,6 @@ func printValidation(path, name string, result *config.ValidationResult) {
 }
 
 // ═══════════════════════════════════════════
-// apply — Deploy pipeline
-// ═══════════════════════════════════════════
-
-func cmdApply(args []string) error {
-	if len(args) == 0 {
-		return fmt.Errorf("usage: mako apply <file>")
-	}
-
-	spec, err := config.Load(args[0])
-	if err != nil {
-		return err
-	}
-
-	result := config.Validate(spec)
-	if !result.IsValid() {
-		printValidation(args[0], spec.Pipeline.Name, result)
-		return fmt.Errorf("fix validation errors before applying")
-	}
-
-	registry := os.Getenv("MAKO_REGISTRY")
-	if registry == "" {
-		registry = "ghcr.io/stefen-taime/mako"
-	}
-
-	// Generate K8s manifests
-	k8s, err := codegen.GenerateK8s(spec, registry)
-	if err != nil {
-		return err
-	}
-
-	// Write to temp file and kubectl apply
-	outDir := ".mako/generated"
-	os.MkdirAll(outDir, 0755)
-
-	k8sPath := filepath.Join(outDir, spec.Pipeline.Name+".k8s.yaml")
-	if err := os.WriteFile(k8sPath, []byte(k8s), 0644); err != nil {
-		return err
-	}
-
-	fmt.Printf("📦 Generated: %s\n", k8sPath)
-	fmt.Printf("🚀 Applying pipeline %q...\n", spec.Pipeline.Name)
-	fmt.Printf("   kubectl apply -f %s\n", k8sPath)
-	fmt.Println("✅ Pipeline deployed")
-
-	return nil
-}
-
-// ═══════════════════════════════════════════
-// generate — Output K8s or Terraform
-// ═══════════════════════════════════════════
-
-func cmdGenerate(args []string) error {
-	if len(args) == 0 {
-		return fmt.Errorf("usage: mako generate <file> [--k8s|--tf]")
-	}
-
-	spec, err := config.Load(args[0])
-	if err != nil {
-		return err
-	}
-
-	format := "--k8s"
-	if len(args) > 1 {
-		format = args[1]
-	}
-
-	switch format {
-	case "--k8s":
-		registry := os.Getenv("MAKO_REGISTRY")
-		if registry == "" {
-			registry = "ghcr.io/stefen-taime/mako"
-		}
-		output, err := codegen.GenerateK8s(spec, registry)
-		if err != nil {
-			return err
-		}
-		fmt.Print(output)
-
-	case "--tf", "--terraform":
-		output, err := codegen.GenerateTerraform(spec)
-		if err != nil {
-			return err
-		}
-		fmt.Print(output)
-
-	default:
-		return fmt.Errorf("unknown format: %s (use --k8s or --tf)", format)
-	}
-
-	return nil
-}
-
-// ═══════════════════════════════════════════
 // dry-run — Process sample data locally
 // ═══════════════════════════════════════════
 
@@ -481,44 +371,6 @@ func cmdDryRun(args []string) error {
 
 	fmt.Fprintf(os.Stderr, "\n📊 Results: %d in → %d out, %d filtered, %d errors\n",
 		total, passed, filtered, errors)
-	return nil
-}
-
-// ═══════════════════════════════════════════
-// status — Show pipeline status
-// ═══════════════════════════════════════════
-
-func cmdStatus(args []string) error {
-	if len(args) > 0 {
-		fmt.Printf("📊 Pipeline: %s\n", args[0])
-		fmt.Println("   Status:    running")
-		fmt.Println("   Events/s:  1,234")
-		fmt.Println("   Lag:       42")
-		fmt.Println("   Errors:    0")
-		fmt.Println("   Uptime:    2h34m")
-	} else {
-		fmt.Println("📊 Running Pipelines")
-		fmt.Println(strings.Repeat("─", 70))
-		fmt.Printf("%-20s %-10s %-12s %-8s %-10s\n",
-			"NAME", "STATUS", "EVENTS/S", "LAG", "ERRORS")
-		fmt.Println(strings.Repeat("─", 70))
-		fmt.Println("   No pipelines found. Deploy one with: mako apply pipeline.yaml")
-	}
-	return nil
-}
-
-// ═══════════════════════════════════════════
-// destroy — Remove pipeline
-// ═══════════════════════════════════════════
-
-func cmdDestroy(args []string) error {
-	if len(args) == 0 {
-		return fmt.Errorf("usage: mako destroy <pipeline-name>")
-	}
-	name := args[0]
-	fmt.Printf("💀 Destroying pipeline %q...\n", name)
-	fmt.Printf("   kubectl delete -f .mako/generated/%s.k8s.yaml\n", name)
-	fmt.Println("✅ Pipeline destroyed")
 	return nil
 }
 
