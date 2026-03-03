@@ -169,6 +169,7 @@ pipeline:
     database: mako
     schema: public
     table: commerce_events
+    flatten: true
     config:
       host: localhost
       port: "5432"

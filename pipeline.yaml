@@ -5,6 +5,7 @@
 # applies transforms, and loads to PostgreSQL.
 #
 # Quick start:
+#   cd docker && docker compose up -d   # start infrastructure
 #   mako validate pipeline.yaml
 #   mako run pipeline.yaml
 #
@@ -43,8 +44,9 @@ pipeline:
   sink:
     type: postgres
     database: mako
-    schema: analytics
+    schema: public
     table: commerce_events
+    flatten: true
     config:
       host: localhost
       port: "5432"
