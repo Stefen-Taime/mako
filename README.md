@@ -19,6 +19,7 @@
   <a href="examples/transforms/">Transforms</a> &middot;
   <a href="examples/workflows/">Workflows</a> &middot;
   <a href="#observability">Observability</a> &middot;
+  <a href="#grafana-dashboard">Grafana</a> &middot;
   <a href="CONTRIBUTING.md">Contributing</a>
 </p>
 
@@ -206,20 +207,83 @@ The email is hashed (PII compliance), the event passes the production filter, an
 
 ## Observability
 
-All pipelines expose Prometheus metrics, health probes, and a status API:
+Every pipeline exposes real-time Prometheus metrics, health probes, and a status API on a single HTTP port (default `:9090`).
 
-| Endpoint | Description |
-|----------|-------------|
-| `/metrics` | Prometheus metrics (events processed, errors, latency, batch size) |
-| `/health` | Liveness probe |
-| `/ready` | Readiness probe |
-| `/status` | Pipeline status JSON (state, counts, uptime) |
+### Prometheus Metrics
 
-**Workflow mode:** All pipelines in a workflow share a single Prometheus endpoint (`:9090`) via a shared metrics registry.
+```text
+mako_events_in_total{pipeline="order-events"}        15234
+mako_events_out_total{pipeline="order-events"}        15230
+mako_errors_total{pipeline="order-events"}            4
+mako_dlq_total{pipeline="order-events"}               2
+mako_schema_failures_total{pipeline="order-events"}   1
+mako_sink_latency_microseconds{pipeline="order-events"} 4523
+mako_throughput_events_per_second{pipeline="order-events"} 1523.40
+mako_uptime_seconds{pipeline="order-events"}          3600.0
+mako_pipeline_ready{pipeline="order-events"}          1
+```
 
-Slack alerting is supported for freshness SLA violations, error spikes, and pipeline completion.
+Metrics are synced from the pipeline engine every **500ms** for live visibility during execution, with a final sync after graceful shutdown.
 
-See [docs/observability.md](docs/observability.md) for details.
+**Workflow mode:** All pipelines in a workflow share a single Prometheus endpoint (`:9090`) via a shared [MetricsRegistry](pkg/observability/registry.go) -- no port-per-pipeline overhead.
+
+### Grafana Dashboard
+
+A pre-built Grafana dashboard is included at [`grafana/mako-dashboard.json`](grafana/mako-dashboard.json) with 4 sections:
+
+| Section | Panels |
+|---------|--------|
+| **Overview** | Events In, Events Out, Errors, DLQ Events, Schema Failures, Uptime |
+| **Throughput** | Events/sec rate graph, Instantaneous throughput |
+| **Errors & DLQ** | Error rate per minute (bar chart), Error rate % (gauge), Pipeline Ready (UP/DOWN) |
+| **Sink Performance** | Sink write latency, Events In vs Out (cumulative) |
+
+The dashboard auto-discovers pipelines via a `$pipeline` template variable and supports multi-select.
+
+### Local Setup (Prometheus + Grafana)
+
+The `docker/` stack includes Prometheus and Grafana pre-configured to scrape Mako pipelines:
+
+```bash
+cd docker/
+docker compose up -d prometheus grafana
+
+# Prometheus  → http://localhost:9091
+# Grafana     → http://localhost:3000  (admin / mako)
+```
+
+Grafana is auto-provisioned with the Prometheus datasource and the Mako dashboard -- no manual import needed. Just run a pipeline with `mako run` or `mako workflow` and open Grafana.
+
+### HTTP Endpoints
+
+| Endpoint | Description | Use |
+|----------|-------------|-----|
+| `GET /metrics` | Prometheus text format | Scraping by Prometheus/Grafana |
+| `GET /health` | Liveness probe (always 200) | Kubernetes `livenessProbe` |
+| `GET /ready` | Readiness probe (200 when running) | Kubernetes `readinessProbe` |
+| `GET /status` | Pipeline status JSON | Monitoring dashboards |
+
+### Slack Alerting
+
+Send alerts to Slack on errors, SLA breaches, and pipeline completion:
+
+```yaml
+monitoring:
+  freshnessSLA: 5m
+  alertChannel: "#data-alerts"
+  slackWebhookURL: ${SLACK_WEBHOOK_URL}
+  alerts:
+    - name: high_error_rate
+      type: error_rate
+      threshold: "0.5%"
+      severity: critical
+    - name: volume_drop
+      type: volume
+      threshold: "-50%"
+      severity: warning
+```
+
+Alert rule types: **latency** (stale data), **error_rate** (% threshold), **volume** (throughput change). Each rule has a 5-minute cooldown. See [docs/observability.md](docs/observability.md) for full details.
 
 ---
 
@@ -304,8 +368,10 @@ mako/
 │   ├── transforms/                 # SQL, WASM, Schema, DQ Check, PII, Filter
 │   └── workflows/                  # NYC TLC Star Schema, ETL Demo, Multi-Source
 ├── docs/                           # Detailed documentation
-├── docker/                         # Local infra (Kafka, PostgreSQL, Prometheus)
-├── grafana/                        # Grafana dashboard template
+├── docker/                         # Local infra (Kafka, PostgreSQL, Prometheus, Grafana)
+│   ├── prometheus/prometheus.yml   # Pre-configured to scrape Mako on :9090
+│   └── grafana/provisioning/      # Auto-provision datasource + dashboard
+├── grafana/mako-dashboard.json    # Grafana dashboard (Overview, Throughput, Errors, Sink)
 ├── .github/workflows/ci.yml        # CI: unit + integration tests
 └── Dockerfile                      # Production image
 ```
