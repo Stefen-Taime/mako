@@ -2249,6 +2249,11 @@ func TestHTTPSourceRetryOn429(t *testing.T) {
 	var requestCount atomic.Int32
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Skip HEAD requests from preflight check
+		if r.Method == http.MethodHead {
+			w.WriteHeader(200)
+			return
+		}
 		count := requestCount.Add(1)
 		if count <= 2 {
 			w.Header().Set("Retry-After", "1")
@@ -2297,6 +2302,11 @@ func TestHTTPSourceRetryOn5xx(t *testing.T) {
 	var requestCount atomic.Int32
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Skip HEAD requests from preflight check
+		if r.Method == http.MethodHead {
+			w.WriteHeader(200)
+			return
+		}
 		count := requestCount.Add(1)
 		if count == 1 {
 			w.WriteHeader(503)
@@ -2343,6 +2353,11 @@ func TestHTTPSourceNoRetryOn4xx(t *testing.T) {
 			var requestCount atomic.Int32
 
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				// Skip HEAD requests from preflight check
+				if r.Method == http.MethodHead {
+					w.WriteHeader(code)
+					return
+				}
 				requestCount.Add(1)
 				w.WriteHeader(code)
 				w.Write([]byte(`{"error": "client error"}`))

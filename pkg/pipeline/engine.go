@@ -9,7 +9,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
+	"os"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -114,18 +114,25 @@ func (p *Pipeline) Start(ctx context.Context) error {
 	p.startedAt = time.Now()
 	p.state.Store(v1.StateStarting)
 
+	// Preflight: open and verify all connections before processing any data
+	fmt.Fprintf(os.Stderr, "🔌 Preflight checks...\n")
+
 	// Open source
 	if err := p.source.Open(ctx); err != nil {
+		fmt.Fprintf(os.Stderr, "   ❌ source — %v\n", err)
 		p.state.Store(v1.StateFailed)
 		return fmt.Errorf("open source: %w", err)
 	}
+	fmt.Fprintf(os.Stderr, "   ✅ source — ready\n")
 
 	// Open sinks
 	for _, s := range p.sinks {
 		if err := s.Open(ctx); err != nil {
+			fmt.Fprintf(os.Stderr, "   ❌ %s — %v\n", s.Name(), err)
 			p.state.Store(v1.StateFailed)
 			return fmt.Errorf("open sink %s: %w", s.Name(), err)
 		}
+		fmt.Fprintf(os.Stderr, "   ✅ %s — connected\n", s.Name())
 	}
 
 	// Start event loop
@@ -187,14 +194,14 @@ func (p *Pipeline) eventLoop(ctx context.Context, eventCh <-chan *Event, batchSi
 		for _, sink := range p.sinks {
 			start := time.Now()
 			if err := sink.Write(writeCtx, batch); err != nil {
-				log.Printf("[pipeline] sink %s write error: %v", sink.Name(), err)
+				fmt.Fprintf(os.Stderr, "❌ [sink:%s] write failed (%d events): %v\n", sink.Name(), len(batch), err)
 				p.errors.Add(1)
 				p.handleError(writeCtx, err, batch)
 				anyFailed = true
 				continue
 			}
 			if err := sink.Flush(writeCtx); err != nil {
-				log.Printf("[pipeline] sink %s flush error: %v", sink.Name(), err)
+				fmt.Fprintf(os.Stderr, "❌ [sink:%s] flush failed (%d events): %v\n", sink.Name(), len(batch), err)
 				p.errors.Add(1)
 				anyFailed = true
 				continue
@@ -342,14 +349,14 @@ func (p *Pipeline) parallelEventLoop(ctx context.Context, eventCh <-chan *Event,
 		for _, sink := range p.sinks {
 			start := time.Now()
 			if err := sink.Write(writeCtx, batch); err != nil {
-				log.Printf("[pipeline] sink %s write error: %v", sink.Name(), err)
+				fmt.Fprintf(os.Stderr, "❌ [sink:%s] write failed (%d events): %v\n", sink.Name(), len(batch), err)
 				p.errors.Add(1)
 				p.handleError(writeCtx, err, batch)
 				anyFailed = true
 				continue
 			}
 			if err := sink.Flush(writeCtx); err != nil {
-				log.Printf("[pipeline] sink %s flush error: %v", sink.Name(), err)
+				fmt.Fprintf(os.Stderr, "❌ [sink:%s] flush failed (%d events): %v\n", sink.Name(), len(batch), err)
 				p.errors.Add(1)
 				anyFailed = true
 				continue
@@ -502,13 +509,16 @@ func (p *Pipeline) handleError(ctx context.Context, err error, batch []*Event) {
 	if p.spec.Isolation.DLQEnabled && p.dlq != nil {
 		if dlqErr := p.dlq.Write(ctx, batch); dlqErr != nil {
 			// DLQ write also failed — degrade pipeline
+			fmt.Fprintf(os.Stderr, "⚠️  [pipeline] %d events LOST: all %d retries failed and DLQ write also failed\n", len(batch), maxRetries)
 			p.state.Store(v1.StateDegraded)
 			return
 		}
+		fmt.Fprintf(os.Stderr, "⚠️  [pipeline] %d events sent to DLQ after %d failed retries\n", len(batch), maxRetries)
 		p.dlqCount.Add(int64(len(batch)))
 		return
 	}
 
+	fmt.Fprintf(os.Stderr, "⚠️  [pipeline] %d events DROPPED: all %d retries exhausted (no DLQ configured)\n", len(batch), maxRetries)
 	p.state.Store(v1.StateDegraded)
 }
 

@@ -128,6 +128,7 @@ const starterPipeline = `# Mako Pipeline — Starter Template
 # applies transforms, and prints results to stdout.
 #
 # Quick start:
+#   cd docker && docker compose up -d   # start infrastructure
 #   mako validate pipeline.yaml
 #   mako run pipeline.yaml
 #
@@ -166,17 +167,20 @@ pipeline:
   sink:
     type: stdout
 
-  # ── Uncomment below to write to PostgreSQL instead ──
+  # ── To write to PostgreSQL instead, replace the sink above with: ──
+  #
   # sink:
   #   type: postgres
   #   database: mako
-  #   schema: analytics
+  #   schema: public
   #   table: commerce_events
   #   config:
   #     host: localhost
   #     port: "5432"
   #     user: mako
   #     password: mako
+  #
+  # ── End PostgreSQL sink ──
 
   monitoring:
     metrics:
@@ -640,10 +644,25 @@ func runPipeline(ctx context.Context, pipelineFile string, sharedObsSrv *observa
 			}
 		}
 	} else {
-		fmt.Fprintf(os.Stderr, "📥 Source:    %s (%s)\n", p.Source.Type, p.Source.Topic)
+		sourceDetail := p.Source.Topic
+		if sourceDetail == "" {
+			if u, ok := p.Source.Config["url"].(string); ok {
+				sourceDetail = u
+			}
+			if f, ok := p.Source.Config["path"].(string); ok {
+				sourceDetail = f
+			}
+		}
+		fmt.Fprintf(os.Stderr, "📥 Source:    %s (%s)\n", p.Source.Type, sourceDetail)
 	}
 	fmt.Fprintf(os.Stderr, "🔧 Transforms: %d steps\n", chain.Len())
+	for _, t := range p.Transforms {
+		fmt.Fprintf(os.Stderr, "   └─ %s (%s)\n", t.Name, t.Type)
+	}
 	fmt.Fprintf(os.Stderr, "📤 Sinks:    %d configured\n", len(sinks))
+	for _, s := range sinks {
+		fmt.Fprintf(os.Stderr, "   └─ %s\n", s.Name())
+	}
 	if obsSrv != nil {
 		fmt.Fprintf(os.Stderr, "📊 Metrics:  http://localhost:%d/metrics\n", metricsPort)
 		fmt.Fprintf(os.Stderr, "💚 Health:   http://localhost:%d/health\n", metricsPort)
@@ -805,8 +824,12 @@ func runPipeline(ctx context.Context, pipelineFile string, sharedObsSrv *observa
 
 	status := pipe.Status()
 	duration := time.Since(startTime)
-	fmt.Fprintf(os.Stderr, "📊 Final stats: %d in, %d out, %d errors\n",
-		status.EventsIn, status.EventsOut, status.Errors)
+	sinkNames := make([]string, len(sinks))
+	for i, s := range sinks {
+		sinkNames[i] = s.Name()
+	}
+	fmt.Fprintf(os.Stderr, "📊 Final stats: %d in → %s → %d out, %d errors\n",
+		status.EventsIn, strings.Join(sinkNames, ", "), status.EventsOut, status.Errors)
 
 	// Send completion alert
 	slackAlerter.SendComplete(ctx, status.EventsIn, status.EventsOut, status.Errors, duration)

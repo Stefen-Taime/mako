@@ -244,6 +244,25 @@ func (s *HTTPSource) Open(ctx context.Context) error {
 		return fmt.Errorf("http source: invalid url: %w", err)
 	}
 
+	// Verify URL is reachable (network-level check only).
+	// We only check that the server responds — HTTP status codes (4xx, 5xx)
+	// are handled by the Read() loop with retries, not here.
+	reqCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	client := s.client
+	if client == nil {
+		client = http.DefaultClient
+	}
+	req, err := http.NewRequestWithContext(reqCtx, http.MethodHead, s.url, nil)
+	if err != nil {
+		return fmt.Errorf("http source: invalid url %q: %w", s.url, err)
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("http source: url unreachable %q: %w", s.url, err)
+	}
+	resp.Body.Close()
+
 	fmt.Fprintf(os.Stderr, "[http] source: %s %s (auth=%s, pagination=%s, poll=%s)\n",
 		s.method, s.url, s.authType, s.paginationType, s.pollInterval)
 	return nil
