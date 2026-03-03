@@ -114,12 +114,12 @@ jobs:
           PGPASSWORD=mako psql -h localhost -U mako -d mako -f docker/postgres/init/001-schema.sql
           PGPASSWORD=mako psql -h localhost -U mako -d mako -c "
             CREATE TABLE IF NOT EXISTS analytics.pipeline_events (
-              event_key    VARCHAR(255),
-              event_data   JSONB NOT NULL,
-              event_ts     TIMESTAMPTZ DEFAULT NOW(),
-              topic        VARCHAR(255),
-              partition_id INTEGER,
-              offset_id    BIGINT
+              event_key       VARCHAR(255),
+              event_data      JSONB NOT NULL,
+              event_timestamp TIMESTAMPTZ DEFAULT NOW(),
+              topic           VARCHAR(255),
+              partition        INTEGER,
+              \"offset\"       BIGINT
             );
           "
 
