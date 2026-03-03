@@ -115,87 +115,73 @@ func cmdInit(args []string) error {
 	}
 
 	fmt.Printf("✅ Created %s\n", filename)
-	fmt.Println("   Edit it, then run: mako validate", filename)
+	fmt.Println("   Next steps:")
+	fmt.Printf("   mako validate %s   # check syntax\n", filename)
+	fmt.Printf("   mako run %s        # run pipeline\n", filename)
 	return nil
 }
 
-const starterPipeline = `# Mako Pipeline Specification
+const starterPipeline = `# Mako Pipeline — Starter Template
 # Docs: https://github.com/Stefen-Taime/mako
+#
+# This pipeline fetches commerce data from a public JSON API,
+# applies transforms, and prints results to stdout.
+#
+# Quick start:
+#   mako validate pipeline.yaml
+#   mako run pipeline.yaml
+#
 apiVersion: mako/v1
 kind: Pipeline
 
 pipeline:
-  name: my-events
-  description: "Real-time event processing pipeline"
+  name: commerce-ingest
+  description: "Ingest commerce data from open-source-data"
   owner: data-engineering
 
   source:
-    type: kafka
-    topic: events.my-events
-    brokers: ${KAFKA_BROKERS:-localhost:9092}
-    startOffset: latest
+    type: http
+    config:
+      url: https://raw.githubusercontent.com/Stefen-Taime/open-source-data/main/commerce/json/json_bank_20240116_1.json
+      method: GET
+      auth_type: none
+      response_type: json
 
   transforms:
-    # PII governance: hash sensitive fields
+    # Hash user_id for privacy
     - name: pii_mask
       type: hash_fields
-      fields: [email, phone, ssn]
+      fields: [user_id]
 
-    # Drop internal fields
+    # Drop fields we don't need
     - name: cleanup
       type: drop_fields
-      fields: [internal_id, debug_flag]
+      fields: [price_string, dt_current_timestamp]
 
-    # Filter out test events
-    - name: filter_prod
+    # Keep only items above $50
+    - name: filter_price
       type: filter
-      condition: "environment = production"
+      condition: "price > 50"
 
   sink:
-    type: snowflake
-    database: ANALYTICS
-    schema: RAW
-    table: MY_EVENTS
-    batch:
-      size: 1000
-      interval: 10s
+    type: stdout
 
-  schema:
-    enforce: true
-    registry: ${SCHEMA_REGISTRY:-http://localhost:8081}
-    compatibility: BACKWARD
-    onFailure: dlq
-
-  isolation:
-    strategy: per_event_type
-    maxRetries: 3
-    dlqEnabled: true
+  # ── Uncomment below to write to PostgreSQL instead ──
+  # sink:
+  #   type: postgres
+  #   database: mako
+  #   schema: analytics
+  #   table: commerce_events
+  #   config:
+  #     host: localhost
+  #     port: "5432"
+  #     user: mako
+  #     password: mako
 
   monitoring:
-    freshnessSLA: 5m
-    alertChannel: "#data-alerts"
     metrics:
       enabled: true
       port: 9090
-    alerts:
-      - name: high_error_rate
-        type: error_rate
-        threshold: "1%"
-        severity: critical
-      - name: stale_data
-        type: freshness
-        threshold: 15m
-        severity: warning
-
-  resources:
-    replicas: 2
-    cpu: 500m
-    memory: 512Mi
-    autoscale:
-      enabled: true
-      minReplicas: 1
-      maxReplicas: 10
-      targetLag: 5000
 `
 
 // ═══════════════════════════════════════════
