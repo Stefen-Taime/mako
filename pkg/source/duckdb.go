@@ -68,6 +68,11 @@ func NewDuckDBSource(cfg map[string]any) *DuckDBSource {
 // If the query or table references remote paths (s3://, gs://, az://),
 // the httpfs extension is automatically loaded and cloud credentials
 // are configured from the YAML config or environment variables.
+//
+// For GCS paths (gs://), if no service account key is configured, Mako
+// uses ADC proxy mode: it generates short-lived signed URLs via the Go SDK
+// and rewrites the query to use HTTPS URLs that DuckDB httpfs can read
+// without any GCS-specific auth.
 func (s *DuckDBSource) Open(ctx context.Context) error {
 	if s.query == "" && s.table == "" {
 		return fmt.Errorf("duckdb source: either query or table is required")
@@ -90,6 +95,17 @@ func (s *DuckDBSource) Open(ctx context.Context) error {
 	}
 	if duckdbext.NeedsHTTPFSQuery(queryOrTable) || duckdbext.NeedsHTTPFS(queryOrTable) {
 		cc := duckdbext.CloudConfigFromMap(s.config)
+
+		// GCS ADC proxy: rewrite gs:// to signed URLs when no service account key.
+		if s.query != "" && duckdbext.NeedsGCSSignedURLs(s.query, cc) {
+			rewritten, err := duckdbext.RewriteGCSToSignedURLs(ctx, s.query)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "[duckdb] warning: GCS signed URL rewrite failed: %v (falling back to native auth)\n", err)
+			} else {
+				s.query = rewritten
+			}
+		}
+
 		if err := duckdbext.LoadCloudExtensions(ctx, db, cc, "source"); err != nil {
 			fmt.Fprintf(os.Stderr, "[duckdb] warning: %v\n", err)
 		}

@@ -7,7 +7,12 @@ import (
 	"database/sql"
 	"fmt"
 	"os"
+	"regexp"
 	"strings"
+	"time"
+
+	"cloud.google.com/go/storage"
+	"google.golang.org/api/iterator"
 )
 
 // CloudConfig holds credentials for S3, GCS, and Azure Blob Storage
@@ -167,4 +172,205 @@ func resolve(cfg map[string]any, key, envKey, defaultVal string) string {
 		}
 	}
 	return defaultVal
+}
+
+// ═══════════════════════════════════════════
+// GCS ADC proxy — signed URL rewriting
+// ═══════════════════════════════════════════
+
+// gcsPathRe matches gs://bucket/path patterns inside SQL strings (single-quoted).
+// It captures the full gs://... URL between quotes.
+var gcsPathRe = regexp.MustCompile(`'(gs://[^']+)'`)
+
+// NeedsGCSSignedURLs returns true if a query references gs:// paths and
+// no service account key is configured (meaning DuckDB httpfs can't auth natively).
+func NeedsGCSSignedURLs(query string, cc CloudConfig) bool {
+	if cc.GCSServiceAccountKey != "" {
+		return false // service account key available — DuckDB can handle it
+	}
+	lower := strings.ToLower(query)
+	return strings.Contains(lower, "gs://") || strings.Contains(lower, "gcs://")
+}
+
+// RewriteGCSToSignedURLs replaces gs://bucket/path patterns in a SQL query
+// with short-lived signed HTTPS URLs generated via the Go GCS SDK (ADC).
+// This allows DuckDB httpfs to read GCS objects without a service account key,
+// using any ADC credential type (authorized_user, workload identity, etc.).
+//
+// Glob patterns (e.g., gs://bucket/dir/*.parquet) are expanded by listing
+// matching objects and replacing the single glob path with a list of signed URLs.
+//
+// Returns the rewritten query and a cleanup function (currently a no-op).
+func RewriteGCSToSignedURLs(ctx context.Context, query string) (string, error) {
+	matches := gcsPathRe.FindAllStringSubmatchIndex(query, -1)
+	if len(matches) == 0 {
+		return query, nil
+	}
+
+	client, err := storage.NewClient(ctx)
+	if err != nil {
+		return "", fmt.Errorf("gcs signed url: create client: %w", err)
+	}
+	defer client.Close()
+
+	// Process matches in reverse order so replacement indices stay valid.
+	result := query
+	for i := len(matches) - 1; i >= 0; i-- {
+		// submatch group 1 = the gs:// URL without quotes
+		gsURL := result[matches[i][2]:matches[i][3]]
+
+		signedURLs, err := resolveGCSPath(ctx, client, gsURL)
+		if err != nil {
+			return "", fmt.Errorf("gcs signed url: %w", err)
+		}
+
+		var replacement string
+		if len(signedURLs) == 1 {
+			replacement = "'" + signedURLs[0] + "'"
+		} else {
+			// Multiple files from glob expansion → DuckDB list syntax
+			quoted := make([]string, len(signedURLs))
+			for j, u := range signedURLs {
+				quoted[j] = "'" + u + "'"
+			}
+			replacement = "[" + strings.Join(quoted, ", ") + "]"
+		}
+
+		// Replace the full match (including quotes)
+		result = result[:matches[i][0]] + replacement + result[matches[i][1]:]
+	}
+
+	fmt.Fprintf(os.Stderr, "[duckdb] rewrote gs:// paths to signed URLs (ADC proxy mode)\n")
+	return result, nil
+}
+
+// resolveGCSPath handles a single gs://bucket/path, expanding globs if needed,
+// and returns signed URLs for each matching object.
+func resolveGCSPath(ctx context.Context, client *storage.Client, gsURL string) ([]string, error) {
+	bucket, path, err := parseGCSURL(gsURL)
+	if err != nil {
+		return nil, err
+	}
+
+	bkt := client.Bucket(bucket)
+
+	// Check if the path contains a glob pattern.
+	if strings.ContainsAny(path, "*?[") {
+		return expandGlobAndSign(ctx, bkt, bucket, path)
+	}
+
+	// Single object — sign directly.
+	url, err := signObject(ctx, bkt, bucket, path)
+	if err != nil {
+		return nil, err
+	}
+	return []string{url}, nil
+}
+
+// parseGCSURL extracts bucket and object path from gs://bucket/path or gcs://bucket/path.
+func parseGCSURL(gsURL string) (bucket, path string, err error) {
+	u := gsURL
+	u = strings.TrimPrefix(u, "gs://")
+	u = strings.TrimPrefix(u, "gcs://")
+
+	idx := strings.IndexByte(u, '/')
+	if idx < 0 {
+		return "", "", fmt.Errorf("invalid GCS path %q: no object path", gsURL)
+	}
+	return u[:idx], u[idx+1:], nil
+}
+
+// expandGlobAndSign lists objects matching a glob pattern and signs each one.
+func expandGlobAndSign(ctx context.Context, bkt *storage.BucketHandle, bucket, pattern string) ([]string, error) {
+	// Extract the prefix before the first glob character for efficient listing.
+	prefix := pattern
+	for i, c := range pattern {
+		if c == '*' || c == '?' || c == '[' {
+			prefix = pattern[:i]
+			break
+		}
+	}
+
+	// Convert glob to regex for matching.
+	globRegex := globToRegex(pattern)
+	re, err := regexp.Compile("^" + globRegex + "$")
+	if err != nil {
+		return nil, fmt.Errorf("invalid glob pattern %q: %w", pattern, err)
+	}
+
+	var urls []string
+	it := bkt.Objects(ctx, &storage.Query{Prefix: prefix})
+	for {
+		attrs, err := it.Next()
+		if err == iterator.Done {
+			break
+		}
+		if err != nil {
+			return nil, fmt.Errorf("gcs list gs://%s/%s: %w", bucket, pattern, err)
+		}
+
+		if re.MatchString(attrs.Name) {
+			url, err := signObject(ctx, bkt, bucket, attrs.Name)
+			if err != nil {
+				return nil, err
+			}
+			urls = append(urls, url)
+		}
+	}
+
+	if len(urls) == 0 {
+		return nil, fmt.Errorf("no objects matched gs://%s/%s", bucket, pattern)
+	}
+
+	fmt.Fprintf(os.Stderr, "[duckdb] expanded gs://%s/%s → %d objects\n", bucket, pattern, len(urls))
+	return urls, nil
+}
+
+// signObject generates a signed URL for a single GCS object (15 min TTL).
+func signObject(ctx context.Context, bkt *storage.BucketHandle, bucket, object string) (string, error) {
+	url, err := bkt.SignedURL(object, &storage.SignedURLOptions{
+		Method:  "GET",
+		Expires: time.Now().Add(15 * time.Minute),
+	})
+	if err != nil {
+		return "", fmt.Errorf("sign gs://%s/%s: %w", bucket, object, err)
+	}
+	return url, nil
+}
+
+// globToRegex converts a simple glob pattern to a regex.
+// Supports *, ?, and basic character classes.
+func globToRegex(glob string) string {
+	var b strings.Builder
+	for i := 0; i < len(glob); i++ {
+		switch glob[i] {
+		case '*':
+			// ** matches across path separators (zero or more segments), * does not
+			if i+1 < len(glob) && glob[i+1] == '*' {
+				i++ // skip second *
+				// If followed by /, consume it — ** already covers the separator
+				if i+1 < len(glob) && glob[i+1] == '/' {
+					i++ // skip /
+					b.WriteString("(.+/)?")
+				} else {
+					b.WriteString(".*")
+				}
+			} else {
+				b.WriteString("[^/]*")
+			}
+		case '?':
+			b.WriteString("[^/]")
+		case '.', '+', '^', '$', '|', '(', ')', '{', '}':
+			b.WriteByte('\\')
+			b.WriteByte(glob[i])
+		case '[':
+			// Pass through character classes as-is
+			b.WriteByte('[')
+		case ']':
+			b.WriteByte(']')
+		default:
+			b.WriteByte(glob[i])
+		}
+	}
+	return b.String()
 }
