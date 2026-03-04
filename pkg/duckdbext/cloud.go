@@ -13,6 +13,8 @@ import (
 
 	"cloud.google.com/go/storage"
 	"google.golang.org/api/iterator"
+
+	"github.com/Stefen-Taime/mako/pkg/vault"
 )
 
 // CloudConfig holds credentials for S3, GCS, and Azure Blob Storage
@@ -25,8 +27,9 @@ type CloudConfig struct {
 	S3Endpoint        string
 	S3URLStyle        string // "path" or "vhost"
 
-	// GCS
-	GCSServiceAccountKey string // path to JSON key file
+	// GCS (HMAC keys for S3-compatible access)
+	GCSHMACAccessID string // HMAC access ID (like AWS access key)
+	GCSHMACSecret   string // HMAC secret (like AWS secret key)
 
 	// Azure
 	AzureAccountName string
@@ -45,14 +48,48 @@ func CloudConfigFromMap(cfg map[string]any) CloudConfig {
 		S3Endpoint:        resolve(cfg, "s3_endpoint", "AWS_ENDPOINT_URL", ""),
 		S3URLStyle:        resolve(cfg, "s3_url_style", "", "path"),
 
-		// GCS
-		GCSServiceAccountKey: resolve(cfg, "gcs_service_account_key", "GOOGLE_APPLICATION_CREDENTIALS", ""),
+		// GCS (HMAC keys)
+		GCSHMACAccessID: resolve(cfg, "gcs_hmac_access_id", "GCS_HMAC_ACCESS_ID", ""),
+		GCSHMACSecret:   resolve(cfg, "gcs_hmac_secret", "GCS_HMAC_SECRET", ""),
 
 		// Azure
 		AzureAccountName:      resolve(cfg, "azure_account_name", "AZURE_STORAGE_ACCOUNT", ""),
 		AzureAccountKey:       resolve(cfg, "azure_account_key", "AZURE_STORAGE_KEY", ""),
 		AzureConnectionString: resolve(cfg, "azure_connection_string", "AZURE_STORAGE_CONNECTION_STRING", ""),
 	}
+}
+
+// CloudConfigWithVault builds a CloudConfig like CloudConfigFromMap, but also
+// checks Vault for GCS HMAC credentials. If the Vault secret contains
+// "hmac_access_id" and "hmac_secret" fields, they are used for DuckDB's
+// GCS authentication via the S3-compatible API.
+func CloudConfigWithVault(cfg map[string]any, vc *vault.Client) CloudConfig {
+	cc := CloudConfigFromMap(cfg)
+
+	// If GCS HMAC keys are already set via config or env, no need to check Vault
+	if cc.GCSHMACAccessID != "" {
+		return cc
+	}
+
+	// Try Vault
+	if vc == nil {
+		return cc
+	}
+
+	vaultPath := resolve(cfg, "vault_path", "", "")
+	if vaultPath == "" {
+		return cc
+	}
+
+	accessID := vc.Get(vaultPath, "hmac_access_id")
+	secret := vc.Get(vaultPath, "hmac_secret")
+	if accessID != "" && secret != "" {
+		cc.GCSHMACAccessID = accessID
+		cc.GCSHMACSecret = secret
+		fmt.Fprintf(os.Stderr, "[duckdb] loaded GCS HMAC credentials from Vault (%s)\n", vaultPath)
+	}
+
+	return cc
 }
 
 // NeedsHTTPFS returns true if the given path references a remote cloud store.
@@ -117,14 +154,17 @@ func LoadCloudExtensions(ctx context.Context, db *sql.DB, cc CloudConfig, label 
 		fmt.Fprintf(os.Stderr, "[duckdb] %s: configured S3 credentials (region=%s)\n", label, cc.S3Region)
 	}
 
-	// GCS credentials (via service account key file)
-	if cc.GCSServiceAccountKey != "" {
-		cmd := fmt.Sprintf("SET gcs_service_account_key_path = '%s'", escapeSQLString(cc.GCSServiceAccountKey))
+	// GCS credentials (HMAC keys via CREATE SECRET)
+	if cc.GCSHMACAccessID != "" {
+		cmd := fmt.Sprintf(
+			"CREATE SECRET gcs_secret (TYPE GCS, KEY_ID '%s', SECRET '%s')",
+			escapeSQLString(cc.GCSHMACAccessID),
+			escapeSQLString(cc.GCSHMACSecret),
+		)
 		if _, err := db.ExecContext(ctx, cmd); err != nil {
-			// Older DuckDB versions might not support this — try alternative
-			fmt.Fprintf(os.Stderr, "[duckdb] %s: gcs key path config: %v (continuing)\n", label, err)
+			fmt.Fprintf(os.Stderr, "[duckdb] %s: gcs secret config: %v (continuing)\n", label, err)
 		} else {
-			fmt.Fprintf(os.Stderr, "[duckdb] %s: configured GCS credentials\n", label)
+			fmt.Fprintf(os.Stderr, "[duckdb] %s: configured GCS credentials (HMAC)\n", label)
 		}
 	}
 
@@ -183,10 +223,10 @@ func resolve(cfg map[string]any, key, envKey, defaultVal string) string {
 var gcsPathRe = regexp.MustCompile(`'(gs://[^']+)'`)
 
 // NeedsGCSSignedURLs returns true if a query references gs:// paths and
-// no service account key is configured (meaning DuckDB httpfs can't auth natively).
+// no direct credentials are configured (meaning DuckDB httpfs can't auth natively).
 func NeedsGCSSignedURLs(query string, cc CloudConfig) bool {
-	if cc.GCSServiceAccountKey != "" {
-		return false // service account key available — DuckDB can handle it
+	if cc.GCSHMACAccessID != "" {
+		return false // HMAC keys available — DuckDB can handle it via CREATE SECRET
 	}
 	lower := strings.ToLower(query)
 	return strings.Contains(lower, "gs://") || strings.Contains(lower, "gcs://")

@@ -9,3 +9,4 @@ bin/
 *.wasm
 coverage.txt
 dist/
+target/

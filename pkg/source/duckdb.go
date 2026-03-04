@@ -14,6 +14,7 @@ import (
 
 	"github.com/Stefen-Taime/mako/pkg/duckdbext"
 	"github.com/Stefen-Taime/mako/pkg/pipeline"
+	"github.com/Stefen-Taime/mako/pkg/sink"
 )
 
 // ═══════════════════════════════════════════
@@ -94,9 +95,11 @@ func (s *DuckDBSource) Open(ctx context.Context) error {
 		queryOrTable = s.table
 	}
 	if duckdbext.NeedsHTTPFSQuery(queryOrTable) || duckdbext.NeedsHTTPFS(queryOrTable) {
-		cc := duckdbext.CloudConfigFromMap(s.config)
+		// Try to get GCS HMAC credentials from Vault
+		vc, _ := sink.InitVault()
+		cc := duckdbext.CloudConfigWithVault(s.config, vc)
 
-		// GCS ADC proxy: rewrite gs:// to signed URLs when no service account key.
+		// GCS ADC proxy: rewrite gs:// to signed URLs when no HMAC key is configured.
 		if s.query != "" && duckdbext.NeedsGCSSignedURLs(s.query, cc) {
 			rewritten, err := duckdbext.RewriteGCSToSignedURLs(ctx, s.query)
 			if err != nil {
