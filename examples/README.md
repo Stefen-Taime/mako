@@ -33,7 +33,21 @@ examples/
     nyc-tlc-star-schema/   Star schema from NYC taxi data (9 steps + quality gate)
     etl-demo/              Simple sequential ETL
     multi-source-demo/     Parallel ingestion from multiple sources
+
+  nyc-tlc-pipeline/   Complete end-to-end example (see below)
 ```
+
+## Featured Example: NYC TLC Analytics Pipeline
+
+The [`nyc-tlc-pipeline/`](nyc-tlc-pipeline/) directory contains a complete, production-style data pipeline:
+
+- **15 pipelines** orchestrated as a DAG workflow
+- **Star schema** in Snowflake (6 dimensions + fact + aggregation)
+- **WASM Rust plugin** for real-time anomaly detection
+- **Streamlit dashboard** with 9 analysis sections
+- **Vault** for secrets, **GCS** for staging, **DuckDB** for transforms
+
+See [`nyc-tlc-pipeline/README.md`](nyc-tlc-pipeline/README.md) for full documentation.
 
 ## Quick Start
 

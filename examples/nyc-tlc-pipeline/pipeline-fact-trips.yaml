@@ -89,7 +89,7 @@ pipeline:
     - name: anomaly-detector
       type: plugin
       config:
-        path: ./nyc_pipeline/wasm-anomaly/anomaly.wasm
+        path: ./examples/nyc-tlc-pipeline/wasm-anomaly/anomaly.wasm
 
   sink:
     type: snowflake
